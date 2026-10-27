@@ -78,6 +78,14 @@ class CatalogStore:
                     value TEXT NOT NULL
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    source_text TEXT PRIMARY KEY,
+                    translated_text TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'mymemory',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             # A tiny migration path for databases created by earlier iterations.
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(images)")}
             required = {
@@ -260,6 +268,31 @@ class CatalogStore:
         with self._connect() as connection:
             row = connection.execute("SELECT value FROM catalog_meta WHERE key=?", (key,)).fetchone()
         return str(row["value"]) if row else default
+
+    def translate_en_ru(self, text: str, email: str = "") -> str:
+        """Use the persisted translation cache to avoid wasting the free API quota."""
+        source_text = (text or "").strip()
+        if not source_text:
+            return ""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT translated_text FROM translation_cache WHERE source_text=?",
+                (source_text,),
+            ).fetchone()
+        if row and str(row["translated_text"]).strip():
+            return str(row["translated_text"])
+
+        translated = translate_en_ru_mymemory(source_text, email)
+        with self._connect() as connection:
+            connection.execute("""
+                INSERT INTO translation_cache(source_text, translated_text, provider)
+                VALUES (?, ?, 'mymemory')
+                ON CONFLICT(source_text) DO UPDATE SET
+                    translated_text=excluded.translated_text,
+                    provider=excluded.provider,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (source_text, translated))
+        return translated
 
     def export_selected(self, output_dir: str | Path, include_russian_csv: bool = True) -> tuple[int, int, Path]:
         """Copy accepted images and export English .txt sidecars only on explicit user request."""
