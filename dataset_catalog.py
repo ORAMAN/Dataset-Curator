@@ -235,6 +235,36 @@ class CatalogStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def _status_values(self, group: str) -> list[str]:
+        return sorted(SELECTED_STATUSES if group == "selected" else REJECTED_STATUSES)
+
+    def count_images(self, group: str) -> int:
+        """Counts rows without materializing every image record in Python."""
+        values = self._status_values(group)
+        placeholders = ",".join("?" for _ in values)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS count FROM images WHERE status IN ({placeholders})",
+                values,
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
+    def list_review_images(self, group: str) -> list[dict[str, Any]]:
+        """Returns only fields needed by the GUI; avoids loading AI metrics for every card."""
+        values = self._status_values(group)
+        placeholders = ",".join("?" for _ in values)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT path, filename, status, width, height, description_en, description_ru
+                FROM images
+                WHERE status IN ({placeholders})
+                ORDER BY filename COLLATE NOCASE, path COLLATE NOCASE
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def set_status(self, path: str | Path, status: str, reason: str = "") -> None:
         normalized = self._normalize_path(path)
         with self._connect() as connection:
