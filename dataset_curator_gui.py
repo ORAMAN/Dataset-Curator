@@ -1347,6 +1347,12 @@ class DatasetCuratorApp(tk.Tk):
             command=lambda p=source, en=caption_text, ru=caption_ru_text: self._save_review_caption(p, en, ru),
         )
         save_button.pack(side="left")
+        translate_button = ttk.Button(
+            buttons,
+            text="Перевести EN → RU",
+            command=lambda p=source, en=caption_text, ru=caption_ru_text, g=group: self._translate_review_caption(p, en, ru, g),
+        )
+        translate_button.pack(side="left", padx=(6, 0))
         generate_button = ttk.Button(
             buttons,
             text="Сгенерировать EN + RU",
@@ -1372,6 +1378,7 @@ class DatasetCuratorApp(tk.Tk):
             "caption": caption_text,
             "caption_ru": caption_ru_text,
             "generate": generate_button,
+            "translate": translate_button,
             "save": save_button,
             "move": move_button,
             "caption_state": caption_state,
@@ -1503,6 +1510,52 @@ class DatasetCuratorApp(tk.Tk):
         self._refresh_review_tab(group, reset=True)
         self._refresh_review_tab("rejected" if group == "selected" else "selected", reset=True)
 
+
+    def _translate_review_caption(
+        self,
+        source: Path,
+        english_widget: tk.Text,
+        russian_widget: tk.Text,
+        group: str,
+    ):
+        """Переводит текущий текст EN в редакторе; запись в SQLite выполняется кнопкой сохранения."""
+        if self._review_is_busy():
+            return
+        english_text = english_widget.get("1.0", "end-1c").strip()
+        if not english_text:
+            messagebox.showinfo(APP_TITLE, "Сначала заполните английское описание или сгенерируйте его через BLIP.")
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        try:
+            source.resolve().relative_to(base.resolve())
+        except (OSError, RuntimeError, ValueError):
+            messagebox.showerror(APP_TITLE, "Изображение относится к другому каталогу. Обновите список.")
+            return
+
+        email = self.v["translation_email"].get().strip()
+        key = (group, str(source))
+        card = self.review_card_widgets.get(key)
+        if card:
+            for widget_name in ("generate", "translate", "caption", "caption_ru", "save", "move"):
+                card[widget_name].configure(state="disabled")
+        self.v_status.set(f"Перевод EN → RU: {source.name}")
+        self._log(f"Перевод существующего описания: {source.name}")
+
+        def work():
+            translated = ""
+            error = ""
+            try:
+                translated = CatalogStore(base).translate_en_ru(english_text, email)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            self.event_queue.put(("review_translation_result", group, str(source), translated, error))
+
+        worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorReviewTranslation")
+        self.review_workers[key] = worker
+        worker.start()
 
     def _generate_review_caption(
         self,
