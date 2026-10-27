@@ -145,6 +145,8 @@ class Settings:
     generate_captions: bool = False
     caption_only: bool = False
     skip_existing_captions: bool = True
+    translate_captions: bool = True
+    translation_email: str = ""
     caption_model: str = "Salesforce/blip-image-captioning-base"
     caption_prefix: str = ""
     classify_clip: bool = False
@@ -490,6 +492,7 @@ class DatasetProcessor:
         }
         self.report_rows: list[dict[str, Any]] = []
         self.services = ModelServices(settings, self.log)
+        self.catalog = CatalogStore(settings.input_dir)
 
     def log(self, message: str) -> None:
         self.send(("log", message))
@@ -498,7 +501,8 @@ class DatasetProcessor:
         self.send(("progress", current, total, filename, dict(self.stats)))
 
     def _route(self, folder: str, source: Path, name: str | None = None) -> Path:
-        return safe_copy(source, Path(self.settings.input_dir) / folder, name)
+        """В режиме каталога назначает путь для отчёта, но никогда не копирует файл."""
+        return source
 
     def _process_one(self, source: Path, index: int, total: int) -> None:
         from PIL import Image, ImageOps
