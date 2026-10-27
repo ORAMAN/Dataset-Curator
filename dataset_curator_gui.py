@@ -1529,27 +1529,44 @@ class DatasetCuratorApp(tk.Tk):
         self._refresh_review_tab("rejected" if group == "selected" else "selected", reset=True)
 
 
-    def _generate_review_caption(self, source: Path, caption_widget: tk.Text, group: str):
+    def _generate_review_caption(
+        self,
+        source: Path,
+        caption_widget: tk.Text,
+        russian_widget: tk.Text,
+        group: str,
+    ):
         if self._review_is_busy():
             return
         if not source.is_file():
-            messagebox.showwarning(APP_TITLE, f"Изображение не найдено:\n{source}")
+            messagebox.showwarning(APP_TITLE, f"Исходное изображение не найдено:\n{source}")
             self._refresh_review_tab(group)
             return
-        current_draft = caption_widget.get("1.0", "end-1c").strip()
-        sidecar = source.with_suffix(".txt")
+
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
         try:
-            saved_caption = sidecar.read_text(encoding="utf-8-sig").strip() if sidecar.is_file() else ""
-        except OSError:
-            saved_caption = ""
-        if current_draft and current_draft != saved_caption:
+            source.resolve().relative_to(base.resolve())
+        except (OSError, RuntimeError, ValueError):
+            messagebox.showerror(APP_TITLE, "Изображение относится к другому каталогу. Обновите список.")
+            return
+
+        current_en = caption_widget.get("1.0", "end-1c").strip()
+        current_ru = russian_widget.get("1.0", "end-1c").strip()
+        saved = CatalogStore(base).get_image(source) or {}
+        saved_en = str(saved.get("description_en") or "").strip()
+        saved_ru = str(saved.get("description_ru") or "").strip()
+        if (current_en != saved_en or current_ru != saved_ru) and (current_en or current_ru):
             if not messagebox.askyesno(
                 APP_TITLE,
-                "В редакторе есть несохранённый текст. Заменить его новой AI-подписью?\n"
+                "В редакторе есть несохранённые изменения EN/RU. Заменить оба поля новым результатом AI?\n"
                 "Откажитесь, если сначала нужно сохранить ручные правки.",
                 icon="warning",
             ):
                 return
+
         try:
             settings = self._get_settings()
         except Exception as exc:
@@ -1574,24 +1591,18 @@ class DatasetCuratorApp(tk.Tk):
         key = (group, str(source))
         card = self.review_card_widgets.get(key)
         if card:
-            card["generate"].configure(state="disabled")
-            card["caption"].configure(state="disabled")
-            card["save"].configure(state="disabled")
-            card["move"].configure(state="disabled")
-        self.v_status.set(f"Генерация подписи: {source.name}")
-        self._log(f"Ручная генерация подписи: {source.name}")
+            for widget_name in ("generate", "caption", "caption_ru", "save", "move"):
+                card[widget_name].configure(state="disabled")
+        self.v_status.set(f"Генерация описаний EN/RU: {source.name}")
+        self._log(f"Генерация описаний для карточки: {source.name}")
 
         def work():
             services = ModelServices(settings, lambda line: self.event_queue.put(("log", f"[AI] {line}")))
             caption = ""
+            caption_ru = ""
             error = ""
             try:
                 from PIL import Image, ImageOps
-                if settings.classify_clip:
-                    try:
-                        services.load_clip_model()
-                    except Exception as exc:
-                        self.event_queue.put(("log", f"CLIP недоступен; продолжаю с одной BLIP-подписью: {exc}"))
                 services.load_caption_model()
                 with Image.open(source) as raw:
                     image = ImageOps.exif_transpose(raw).convert("RGB")
@@ -1601,17 +1612,23 @@ class DatasetCuratorApp(tk.Tk):
                     caption = f"{prefix}, {caption}".strip().strip(",")
                 if settings.classify_clip:
                     try:
+                        services.load_clip_model()
                         category, score = services.classify(image)
                         self.event_queue.put(("log", f"CLIP: {category} ({score * 100:.1f}% среди категорий)"))
                         if settings.append_clip_label_to_caption and category and category.casefold() not in caption.casefold():
                             caption = f"{caption.rstrip(' .,;')} , {category}".replace(" ,", ",")
                     except Exception as exc:
-                        self.event_queue.put(("log", f"Ошибка классификации CLIP: {exc}"))
+                        self.event_queue.put(("log", f"CLIP недоступен, оставлена подпись BLIP: {exc}"))
+                if settings.translate_captions:
+                    try:
+                        caption_ru = translate_en_ru_mymemory(caption, settings.translation_email)
+                    except Exception as exc:
+                        self.event_queue.put(("log", f"Перевод MyMemory не выполнен: {type(exc).__name__}: {exc}"))
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             finally:
                 services.close()
-                self.event_queue.put(("review_caption_result", group, str(source), caption, error))
+                self.event_queue.put(("review_caption_result", group, str(source), caption, caption_ru, error))
 
         worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorReviewCaption")
         self.review_workers[key] = worker
