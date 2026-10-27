@@ -63,7 +63,7 @@ jobs:
           assert "zoom_with_wheel" in source, "Image viewer must support Ctrl+mouse-wheel zoom"
           assert "time.perf_counter() + 0.008" in source, "Queue polling must be time-bounded"
           assert "created < 4" in source, "Review cards must be created in small batches"
-          assert 'name="DatasetCuratorReviewLoad-' in source
+          assert "DatasetCuratorReviewLoad-" in source
           assert 'name="DatasetCuratorExport"' in source, "Export must run outside the Tkinter event loop"
           poll_method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == "_poll_queue")
           assert not any(
