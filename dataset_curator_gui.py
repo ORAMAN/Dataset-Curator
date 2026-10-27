@@ -1804,6 +1804,8 @@ class DatasetCuratorApp(tk.Tk):
                         selectforeground=self.palette["text"], highlightbackground=self.palette["border"],
                         highlightcolor=self.palette["accent"],
                     )
+                elif isinstance(widget, tk.Canvas):
+                    widget.configure(background=self.palette["app"], highlightbackground=self.palette["app"])
                 elif isinstance(widget, (tk.Frame, tk.LabelFrame)):
                     widget.configure(bg=self.palette["panel"])
                 for child in widget.winfo_children():
@@ -1927,6 +1929,26 @@ class DatasetCuratorApp(tk.Tk):
                 kind = event[0]
                 if kind == "log":
                     self._log(event[1])
+                elif kind == "review_caption_result":
+                    _, group, path_text, caption, error = event
+                    key = (group, path_text)
+                    self.review_workers.pop(key, None)
+                    card = self.review_card_widgets.get(key)
+                    if card:
+                        card["generate"].configure(state="normal")
+                        card["save"].configure(state="normal")
+                        card["move"].configure(state="normal")
+                        card["caption"].configure(state="normal")
+                        if not error:
+                            card["caption"].delete("1.0", "end")
+                            card["caption"].insert("1.0", caption)
+                    if error:
+                        self.v_status.set(f"Ошибка генерации: {Path(path_text).name}")
+                        self._log(f"Ошибка ручной генерации подписи для {path_text}: {error}")
+                        messagebox.showerror(APP_TITLE, f"Не удалось сгенерировать подпись для:\n{path_text}\n\n{error}")
+                    else:
+                        self.v_status.set(f"Подпись сгенерирована: {Path(path_text).name}. Нажми «Сохранить подпись».")
+                        self._log(f"Подпись подготовлена в редакторе: {path_text}")
                 elif kind == "progress":
                     _, current, total, filename, stats = event
                     self.progress.configure(maximum=max(total, 1), value=current)
@@ -1966,6 +1988,7 @@ class DatasetCuratorApp(tk.Tk):
                     )
                     self._log("ИТОГ\n" + summary.replace("\n", " | "))
                     messagebox.showinfo(APP_TITLE, summary)
+                    self.after(250, self._refresh_all_review_tabs)
                 elif kind == "fatal":
                     _, message, details = event
                     self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
@@ -1975,6 +1998,7 @@ class DatasetCuratorApp(tk.Tk):
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Ошибка запуска")
                     messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
+                    self.after(250, self._refresh_all_review_tabs)
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
