@@ -508,7 +508,7 @@ class DatasetProcessor:
                     dest = self._route("bed_size", source)
                     record.update(status="small_resolution", reason=f"Недостаточное разрешение {width}x{height}", output_file=str(dest))
                     self.stats["small_resolution"] += 1
-                    self.log(f"  → разрешение {width}×{height} ниже порога → bed_size")
+                    self.log(f"  → разрешение {width}×{height} ниже порога → статус small_resolution в SQLite")
                     return
 
             if self.settings.check_faces:
@@ -519,13 +519,13 @@ class DatasetProcessor:
                     dest = self._route("no_or_small_faces", source)
                     record.update(status="no_face", reason="Нет достаточно крупного лица", output_file=str(dest))
                     self.stats["no_face"] += 1
-                    self.log(f"  → нет подходящего лица (макс. высота {max_rel * 100:.1f}%) → no_or_small_faces")
+                    self.log(f"  → нет подходящего лица (макс. высота {max_rel * 100:.1f}%) → статус no_face в SQLite")
                     return
                 if self.settings.reject_multiple_faces and count > 1:
                     dest = self._route("moree_faces", source)
                     record.update(status="multiple_faces", reason=f"Подходящих лиц: {count}", output_file=str(dest))
                     self.stats["multiple_faces"] += 1
-                    self.log(f"  → подходящих лиц: {count} → moree_faces")
+                    self.log(f"  → подходящих лиц: {count} → статус multiple_faces в SQLite")
                     return
 
             if self.settings.check_blur:
@@ -535,7 +535,7 @@ class DatasetProcessor:
                     dest = self._route("blure", source)
                     record.update(status="blurry", reason=f"Размыто: Laplacian variance {variance:.2f}", output_file=str(dest))
                     self.stats["blurry"] += 1
-                    self.log(f"  → размыто ({variance:.1f} < {self.settings.blur_threshold:g}) → blure")
+                    self.log(f"  → размыто ({variance:.1f} < {self.settings.blur_threshold:g}) → статус blurry в SQLite")
                     return
 
             score = None
@@ -547,15 +547,14 @@ class DatasetProcessor:
                 dest = self._route("rejected", source)
                 record.update(status="rejected", reason=f"Низкая эстетическая оценка {score:.2f}", output_file=str(dest))
                 self.stats["rejected"] += 1
-                self.log(f"  → эстетика {score:.2f} → rejected")
+                self.log(f"  → эстетика {score:.2f} → статус rejected в SQLite")
                 return
 
             if score is not None and score < self.settings.aesthetic_keep:
-                out_name = f"!_{score:.1f}_{source.name}"
-                dest = self._route("selected", source, out_name)
+                dest = self._route("selected", source)
                 status = "maybe"
                 self.stats["maybe"] += 1
-                self.log(f"  → эстетика {score:.2f} → пограничное selected/{out_name}")
+                self.log(f"  → эстетика {score:.2f} → пограничный статус maybe в SQLite")
             else:
                 dest = self._route("selected", source)
                 status = "selected"
