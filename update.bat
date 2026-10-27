@@ -44,10 +44,15 @@ if errorlevel 1 (
 )
 
 git rev-parse --is-inside-work-tree >nul 2>&1
+if not errorlevel 1 goto :git_repository_ok
+echo [WARN] Git не распознаёт каталог. Пробую настроить safe.directory...
+git config --global --add safe.directory "%PROJECT_ROOT%" >nul 2>&1
+git rev-parse --is-inside-work-tree >nul 2>&1
 if errorlevel 1 (
-    echo [WARN] Git не распознаёт каталог как репозиторий. Перехожу к ZIP-обновлению.
+    echo [WARN] Репозиторий Git всё ещё не распознаётся. Перехожу к ZIP-обновлению.
     goto :zip_update
 )
+:git_repository_ok
 
 set "CURRENT_BRANCH="
 for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%B"
