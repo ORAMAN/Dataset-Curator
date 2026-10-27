@@ -1123,7 +1123,6 @@ class DatasetCuratorApp(tk.Tk):
         toolbar = ttk.Frame(tab)
         toolbar.pack(fill="x", pady=(0, 6))
 
-        label = "selected" if group == "selected" else "отбракованные файлы"
         ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
         ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g)).pack(side="right")
         ttk.Button(
@@ -1276,7 +1275,6 @@ class DatasetCuratorApp(tk.Tk):
         self.review_visible_count[group] = end
 
         if group in self.review_count_vars:
-            group_name = "выбрано" if group == "selected" else "отбраковано"
             self.review_count_vars[group].set(
                 f"{'Выбранные' if group == 'selected' else 'Отбракованные'} — {len(files)} файлов "
                 f"(показано {end})"
@@ -1359,7 +1357,7 @@ class DatasetCuratorApp(tk.Tk):
         generate_button = ttk.Button(
             buttons,
             text="Сгенерировать",
-            command=lambda p=source, t=caption_text, b=None, g=group: self._generate_review_caption(p, t, g),
+            command=lambda p=source, t=caption_text, g=group: self._generate_review_caption(p, t, g),
         )
         generate_button.pack(side="left", padx=(6, 0))
         move_text = "Забраковать → rejected" if group == "selected" else "Вернуть в selected"
