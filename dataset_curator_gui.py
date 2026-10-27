@@ -1117,6 +1117,446 @@ class DatasetCuratorApp(tk.Tk):
         self.v_model_note.set("BLIP и CLIP опциональны. При включении потребуется transformers и PyTorch. Первое скачивание модели требует доступа к Hugging Face.")
         ttk.Label(tab, textvariable=self.v_model_note, style="Muted.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
 
+    def _build_review_tab(self, tab: ttk.Frame, group: str):
+        """Прокручиваемый просмотр карточек изображений с редактированием sidecar-подписей."""
+        toolbar = ttk.Frame(tab)
+        toolbar.pack(fill="x", pady=(0, 6))
+
+        label = "selected" if group == "selected" else "отбракованные файлы"
+        ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
+        ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g)).pack(side="right")
+        ttk.Button(
+            toolbar,
+            text="Открыть папку",
+            command=lambda g=group: self._open_review_folder(g),
+        ).pack(side="right", padx=(0, 8))
+
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(
+            body,
+            highlightthickness=0,
+            background=self.palette["app"],
+            yscrollincrement=24,
+        )
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        list_frame = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        list_frame.bind(
+            "<Configure>",
+            lambda _event, c=canvas: c.configure(scrollregion=c.bbox("all")),
+            add="+",
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event, c=canvas, win=window_id: c.itemconfigure(win, width=event.width),
+            add="+",
+        )
+        canvas.bind("<Enter>", lambda _event, c=canvas: c.bind_all("<MouseWheel>", lambda e: c.yview_scroll(int(-e.delta / 120), "units")), add="+")
+        canvas.bind("<Leave>", lambda _event: self.unbind_all("<MouseWheel>"), add="+")
+
+        footer = ttk.Frame(tab)
+        footer.pack(fill="x", pady=(6, 0))
+        load_more = ttk.Button(
+            footer,
+            text="Показать ещё",
+            command=lambda g=group: self._refresh_review_tab(g, reset=False),
+        )
+        load_more.pack(side="left")
+        self.review_load_more_buttons[group] = load_more
+        self.review_canvases[group] = canvas
+        self.review_list_frames[group] = list_frame
+
+    def _make_review_count_var(self, group: str) -> tk.StringVar:
+        var = tk.StringVar(value="Выбранные изображения" if group == "selected" else "Отбракованные изображения")
+        self.review_count_vars[group] = var
+        return var
+
+    def _review_input_dir(self) -> Path | None:
+        raw = self.v["input_dir"].get().strip()
+        if not raw:
+            return None
+        try:
+            return Path(raw).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def _open_review_folder(self, group: str):
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showinfo(APP_TITLE, "Сначала выберите существующую исходную папку.")
+            return
+        folder = base / ("selected" if group == "selected" else "rejected")
+        if folder.is_dir():
+            self._open_path(folder)
+        else:
+            messagebox.showinfo(APP_TITLE, f"Папка пока не создана:\n{folder}")
+
+    def _on_review_tab_changed(self, _event=None):
+        try:
+            selected_tab = self.notebook.select()
+            if selected_tab == str(self.tab_selected):
+                self._refresh_review_tab("selected")
+            elif selected_tab == str(self.tab_rejected):
+                self._refresh_review_tab("rejected")
+        except tk.TclError:
+            pass
+
+    def _review_files(self, group: str) -> list[Path]:
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            return []
+        if group == "selected":
+            folders = [base / "selected"]
+        else:
+            # Собираем все типы брака, а не только низкий aesthetic score.
+            folders = [
+                base / "rejected",
+                base / "bed_size",
+                base / "blure",
+                base / "no_or_small_faces",
+                base / "moree_faces",
+                base / "duplicate",
+            ]
+        files: list[Path] = []
+        for folder in folders:
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            try:
+                files.extend(
+                    path for path in folder.iterdir()
+                    if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+                )
+            except OSError as exc:
+                self._log(f"Не удалось прочитать папку {folder}: {exc}")
+        # Файлы с одинаковым именем из разных папок могут быть отдельными изображениями.
+        return sorted(files, key=lambda path: (path.parent.name.casefold(), path.name.casefold(), str(path).casefold()))
+
+    def _refresh_all_review_tabs(self):
+        self._refresh_review_tab("selected", reset=True)
+        self._refresh_review_tab("rejected", reset=True)
+
+    def _refresh_review_tab(self, group: str, reset: bool = True):
+        if group not in self.review_list_frames:
+            return
+        if reset:
+            # При обычном обновлении повторно считываем каталоги и Sidecar подписи.
+            self.review_file_cache[group] = self._review_files(group)
+            self.review_visible_count[group] = 0
+            for key in [key for key in self.review_card_widgets if key[0] == group]:
+                self.review_card_widgets.pop(key, None)
+            self.review_photo_refs[group] = []
+            list_frame = self.review_list_frames[group]
+            for child in list_frame.winfo_children():
+                child.destroy()
+
+        files = self.review_file_cache.get(group, [])
+        list_frame = self.review_list_frames[group]
+        old_count = self.review_visible_count.get(group, 0)
+        end = min(len(files), old_count + self.review_page_size)
+        if not files and old_count == 0:
+            base = self._review_input_dir()
+            if base is None or not base.is_dir():
+                text = "Выберите существующую исходную папку выше."
+            elif group == "selected":
+                text = "Папка selected пока не содержит обработанных изображений."
+            else:
+                text = "Пока нет отклонённых изображений."
+            ttk.Label(list_frame, text=text, style="Muted.TLabel", padding=20).pack(anchor="w")
+        else:
+            for index in range(old_count, end):
+                path = files[index]
+                self._build_review_card(list_frame, group, path)
+        self.review_visible_count[group] = end
+
+        if group in self.review_count_vars:
+            group_name = "выбрано" if group == "selected" else "отбраковано"
+            self.review_count_vars[group].set(
+                f"{'Выбранные' if group == 'selected' else 'Отбракованные'} — {len(files)} файлов "
+                f"(показано {end})"
+            )
+        button = self.review_load_more_buttons.get(group)
+        if button is not None:
+            button.configure(state="normal" if end < len(files) else "disabled")
+            if end < len(files):
+                button.configure(text=f"Показать ещё ({min(self.review_page_size, len(files) - end)})")
+            else:
+                button.configure(text="Все изображения показаны" if files else "Нет изображений")
+        canvas = self.review_canvases.get(group)
+        if canvas is not None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _build_review_card(self, list_frame: ttk.Frame, group: str, source: Path):
+        card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
+        card.pack(fill="x", padx=5, pady=5)
+
+        preview_frame = ttk.Frame(card, width=156)
+        preview_frame.pack(side="left", fill="y", padx=(0, 10))
+        preview_frame.pack_propagate(False)
+        try:
+            from PIL import Image, ImageOps, ImageTk
+            with Image.open(source) as raw:
+                image = ImageOps.exif_transpose(raw).convert("RGB")
+                image.thumbnail((144, 144))
+                thumbnail = ImageTk.PhotoImage(image.copy())
+            self.review_photo_refs[group].append(thumbnail)
+            image_label = ttk.Label(preview_frame, image=thumbnail, anchor="center")
+            image_label.image = thumbnail
+            image_label.pack(fill="both", expand=True)
+        except Exception as exc:
+            ttk.Label(preview_frame, text=f"Не удалось\nзагрузить фото\n{exc}", wraplength=145).pack(fill="both", expand=True)
+
+        content = ttk.Frame(card)
+        content.pack(side="left", fill="both", expand=True)
+        caption_path = source.with_suffix(".txt")
+        try:
+            caption_value = caption_path.read_text(encoding="utf-8-sig") if caption_path.is_file() else ""
+        except OSError as exc:
+            caption_value = ""
+            self._log(f"Не удалось прочитать подпись {caption_path}: {exc}")
+
+        caption_header = ttk.Frame(content)
+        caption_header.pack(fill="x")
+        ttk.Label(caption_header, text="Подпись (.txt)", style="Muted.TLabel").pack(side="left")
+        if caption_path.is_file():
+            ttk.Label(caption_header, text="Есть подпись", style="Muted.TLabel").pack(side="right")
+        else:
+            ttk.Label(caption_header, text="Подпись отсутствует", style="Muted.TLabel").pack(side="right")
+
+        caption_text = tk.Text(content, height=4, wrap="word", undo=True, font=("Segoe UI", 9))
+        caption_text.pack(fill="x", expand=True, pady=(3, 6))
+        if caption_value:
+            caption_text.insert("1.0", caption_value.rstrip("\r\n"))
+
+        buttons = ttk.Frame(content)
+        buttons.pack(fill="x")
+        save_button = ttk.Button(
+            buttons,
+            text="Сохранить подпись",
+            command=lambda p=source, t=caption_text: self._save_review_caption(p, t),
+        )
+        save_button.pack(side="left")
+        generate_button = ttk.Button(
+            buttons,
+            text="Сгенерировать",
+            command=lambda p=source, t=caption_text, b=None, g=group: self._generate_review_caption(p, t, g),
+        )
+        generate_button.pack(side="left", padx=(6, 0))
+        move_text = "Забраковать → rejected" if group == "selected" else "Вернуть в selected"
+        move_style = "Danger.TButton" if group == "selected" else "Accent.TButton"
+        move_button = ttk.Button(
+            buttons,
+            text=move_text,
+            style=move_style,
+            command=lambda p=source, g=group, t=caption_text: self._move_review_image(p, g, t),
+        )
+        move_button.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
+            text="Открыть фото",
+            command=lambda p=source: self._open_path(p),
+        ).pack(side="right")
+
+        self.review_card_widgets[(group, str(source))] = {
+            "caption": caption_text,
+            "generate": generate_button,
+            "save": save_button,
+            "move": move_button,
+            "group": group,
+            "path": source,
+        }
+
+    def _review_is_busy(self) -> bool:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(APP_TITLE, "Основная обработка ещё выполняется. Дождитесь её окончания.")
+            return True
+        if any(worker.is_alive() for worker in self.review_workers.values()):
+            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи.")
+            return True
+        return False
+
+    def _write_caption_for_image(self, source: Path, value: str) -> Path:
+        sidecar = source.with_suffix(".txt")
+        temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_text(value.rstrip() + "\n", encoding="utf-8")
+            temporary.replace(sidecar)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return sidecar
+
+    def _save_review_caption(self, source: Path, caption_widget: tk.Text, show_message: bool = True) -> bool:
+        if self._review_is_busy():
+            return False
+        value = caption_widget.get("1.0", "end-1c").strip()
+        sidecar = source.with_suffix(".txt")
+        if not value:
+            if sidecar.is_file():
+                if not messagebox.askyesno(APP_TITLE, f"Подпись пуста. Удалить существующий файл?\n{sidecar}", icon="warning"):
+                    return False
+                try:
+                    sidecar.unlink()
+                    if show_message:
+                        self.v_status.set(f"Подпись удалена: {sidecar.name}")
+                    return True
+                except OSError as exc:
+                    messagebox.showerror(APP_TITLE, f"Не удалось удалить подпись:\n{exc}")
+                    return False
+            if show_message:
+                messagebox.showinfo(APP_TITLE, "Поле подписи пустое. Файл не создан.")
+            return False
+        try:
+            self._write_caption_for_image(source, value)
+            self._log(f"Подпись сохранена: {sidecar}")
+            if show_message:
+                self.v_status.set(f"Подпись сохранена: {sidecar.name}")
+            return True
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось сохранить подпись:\n{exc}")
+            return False
+
+    def _safe_move_review_image(self, source: Path, target_dir: Path) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        caption_source = source.with_suffix(".txt")
+        index = 1
+        while True:
+            suffix = "" if index == 1 else f"_{index}"
+            candidate = target_dir / f"{source.stem}{suffix}{source.suffix}"
+            candidate_caption = candidate.with_suffix(".txt")
+            if not candidate.exists() and not candidate_caption.exists():
+                break
+            index += 1
+
+        shutil.move(str(source), str(candidate))
+        try:
+            if caption_source.is_file():
+                shutil.move(str(caption_source), str(candidate_caption))
+        except Exception:
+            try:
+                shutil.move(str(candidate), str(source))
+            except Exception:
+                pass
+            raise
+        return candidate
+
+    def _move_review_image(self, source: Path, group: str, caption_widget: tk.Text):
+        if self._review_is_busy():
+            return
+        if not source.is_file():
+            messagebox.showwarning(APP_TITLE, f"Изображение уже перемещено или удалено:\n{source}")
+            self._refresh_review_tab(group)
+            return
+
+        # Сохраняем видимую редакцию перед переносом. Пустое поле не стирает
+        # автоматически уже существующую подпись — для удаления есть отдельная кнопка Save.
+        caption_value = caption_widget.get("1.0", "end-1c").strip()
+        if caption_value:
+            try:
+                self._write_caption_for_image(source, caption_value)
+            except Exception as exc:
+                messagebox.showerror(APP_TITLE, f"Не удалось сохранить подпись перед перемещением:\n{exc}")
+                return
+
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        target_group = "rejected" if group == "selected" else "selected"
+        target_dir = base / target_group
+        try:
+            target = self._safe_move_review_image(source, target_dir)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось переместить изображение:\n{exc}")
+            return
+
+        self._log(f"Изображение перемещено: {source} → {target}")
+        self.v_status.set(f"Перемещено: {target.name}")
+        self._refresh_review_tab(group, reset=True)
+        self._refresh_review_tab(target_group, reset=True)
+
+    def _generate_review_caption(self, source: Path, caption_widget: tk.Text, group: str):
+        if self._review_is_busy():
+            return
+        if not source.is_file():
+            messagebox.showwarning(APP_TITLE, f"Изображение не найдено:\n{source}")
+            self._refresh_review_tab(group)
+            return
+        try:
+            settings = self._get_settings()
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        try:
+            if importlib.util.find_spec("transformers") is None:
+                messagebox.showerror(
+                    APP_TITLE,
+                    "Для генерации подписи необходим пакет transformers.\n\n"
+                    f"Установите его командой:\n\"{sys.executable}\" -m pip install \"transformers>=4.45,<5.0\" \"accelerate>=0.30\"\n\n"
+                    "Либо запустите install_optional_ai.bat и повторите попытку.",
+                )
+                return
+        except (ImportError, ValueError, ModuleNotFoundError):
+            messagebox.showerror(APP_TITLE, "Не удалось найти пакет transformers в текущем окружении Python.")
+            return
+
+        settings.generate_captions = True
+        settings.caption_only = False
+        key = (group, str(source))
+        card = self.review_card_widgets.get(key)
+        if card:
+            card["generate"].configure(state="disabled")
+            card["caption"].configure(state="disabled")
+            card["save"].configure(state="disabled")
+            card["move"].configure(state="disabled")
+        self.v_status.set(f"Генерация подписи: {source.name}")
+        self._log(f"Ручная генерация подписи: {source.name}")
+
+        def work():
+            services = ModelServices(settings, lambda line: self.event_queue.put(("log", f"[AI] {line}")))
+            caption = ""
+            error = ""
+            try:
+                from PIL import Image, ImageOps
+                if settings.classify_clip:
+                    try:
+                        services.load_clip_model()
+                    except Exception as exc:
+                        self.event_queue.put(("log", f"CLIP недоступен; продолжаю с одной BLIP-подписью: {exc}"))
+                services.load_caption_model()
+                with Image.open(source) as raw:
+                    image = ImageOps.exif_transpose(raw).convert("RGB")
+                caption = services.caption(image)
+                prefix = settings.caption_prefix.strip().strip(",;")
+                if prefix and not caption.casefold().startswith(prefix.casefold()):
+                    caption = f"{prefix}, {caption}".strip().strip(",")
+                if settings.classify_clip:
+                    try:
+                        category, score = services.classify(image)
+                        self.event_queue.put(("log", f"CLIP: {category} ({score * 100:.1f}% среди категорий)"))
+                        if settings.append_clip_label_to_caption and category and category.casefold() not in caption.casefold():
+                            caption = f"{caption.rstrip(' .,;')} , {category}".replace(" ,", ",")
+                    except Exception as exc:
+                        self.event_queue.put(("log", f"Ошибка классификации CLIP: {exc}"))
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            finally:
+                services.close()
+                self.event_queue.put(("review_caption_result", group, str(source), caption, error))
+
+        worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorReviewCaption")
+        self.review_workers[key] = worker
+        worker.start()
+
     def _build_log_tab(self):
         toolbar = ttk.Frame(self.tab_log)
         toolbar.pack(fill="x", pady=(0, 6))
