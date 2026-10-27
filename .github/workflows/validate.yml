@@ -1,0 +1,54 @@
+name: Validate Dataset Curator
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile application
+        run: python -m py_compile dataset_curator_gui.py
+
+      - name: Verify review and caption-only features
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path("dataset_curator_gui.py")
+          source = path.read_text(encoding="utf-8")
+          tree = ast.parse(source, filename=str(path))
+          app = next(
+              node for node in tree.body
+              if isinstance(node, ast.ClassDef) and node.name == "DatasetCuratorApp"
+          )
+          processor = next(
+              node for node in tree.body
+              if isinstance(node, ast.ClassDef) and node.name == "DatasetProcessor"
+          )
+          app_methods = {node.name for node in app.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+          processor_methods = {node.name for node in processor.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+          required_app = {
+              "_build_review_tab", "_build_review_card", "_refresh_review_tab",
+              "_save_review_caption", "_move_review_image", "_generate_review_caption",
+          }
+          required_processor = {"_process_caption_only", "_process_one"}
+          missing = (required_app - app_methods) | (required_processor - processor_methods)
+          assert not missing, f"Missing required methods: {sorted(missing)}"
+          assert 'text="Выбранные"' in source
+          assert 'text="Отбракованные"' in source
+          assert 'text="📝 Только подписи"' in source
+          print("Syntax and required review/caption-only methods: OK")
+          PY
