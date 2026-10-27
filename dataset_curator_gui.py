@@ -1796,8 +1796,11 @@ class DatasetCuratorApp(tk.Tk):
         if self.worker and self.worker.is_alive():
             messagebox.showwarning(APP_TITLE, "Основная обработка ещё выполняется. Дождитесь её окончания.")
             return True
+        if self.export_worker and self.export_worker.is_alive():
+            messagebox.showwarning(APP_TITLE, "Экспорт набора ещё выполняется. Дождитесь его завершения.")
+            return True
         if self.review_workers:
-            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи и получения результата.")
+            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи в карточке изображения.")
             return True
         return False
 
@@ -2136,8 +2139,6 @@ class DatasetCuratorApp(tk.Tk):
         if base is None or not base.is_dir():
             messagebox.showerror(APP_TITLE, "Сначала выберите существующую папку датасета.")
             return
-        catalog = CatalogStore(base)
-        catalog.sync_existing_files()
         chosen = filedialog.askdirectory(
             title="Выберите отдельную папку для экспорта готового набора",
             initialdir=str(base.parent),
@@ -2171,36 +2172,47 @@ class DatasetCuratorApp(tk.Tk):
                     "Для безопасного экспорта выберите пустую отдельную папку. Существующие файлы не будут перезаписаны.",
                 )
                 return
-        selected_count = len(catalog.list_images("selected"))
-        if selected_count == 0:
-            messagebox.showinfo(APP_TITLE, "В SQLite пока нет выбранных изображений для экспорта.")
-            return
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Экспортировать выбранные изображения из SQLite в папку:\\n{output}\\n\\n"
+            f"Экспортировать выбранные изображения из SQLite в папку:\n{output}\n\n"
             "Будут скопированы только выбранные/пограничные записи с непустым английским описанием. "
-            "Для каждого фото создастся .txt с английским описанием; переводы будут добавлены в captions_ru.csv.\\n\\n"
+            "Для каждого фото создастся .txt с английским описанием; переводы будут добавлены в captions_ru.csv.\n\n"
+            "Проверка каталога и копирование выполнятся в фоне. "
             "Исходные изображения и база данных останутся без изменений. Продолжить?",
             icon="question",
         ):
             return
-        try:
-            exported, skipped, target = catalog.export_selected(output, include_russian_csv=True)
-            message = (
-                f"Экспорт завершён.\\n\\n"
-                f"Изображений и EN .txt экспортировано: {exported}\\n"
-                f"Пропущено (файл отсутствует или нет английского описания): {skipped}\\n"
-                f"Папка: {target}\\n"
-            )
-            if (target / "captions_ru.csv").is_file():
-                message += "Переводы RU: captions_ru.csv"
-            self._log(message.replace("\n", " | "))
-            self.v_status.set(f"Экспорт завершён: {exported} изображений")
-            messagebox.showinfo(APP_TITLE, message)
-        except Exception as exc:
-            self._log(f"ОШИБКА экспорта: {type(exc).__name__}: {exc}")
-            messagebox.showerror(APP_TITLE, f"Не удалось экспортировать набор:\n{type(exc).__name__}: {exc}")
-        self._refresh_all_review_tabs()
+
+        self.export_button.configure(state="disabled")
+        self.v_status.set("Экспорт набора выполняется в фоновом режиме…")
+
+        def export_work():
+            exported = skipped = added = 0
+            empty = False
+            error = ""
+            output_text = str(output)
+            try:
+                catalog = CatalogStore(base)
+                added = catalog.sync_existing_files()
+                if not catalog.list_images("selected"):
+                    empty = True
+                else:
+                    exported, skipped, target = catalog.export_selected(
+                        output, include_russian_csv=True
+                    )
+                    output_text = str(target)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            self.event_queue.put((
+                "export_result", str(base), output_text, exported, skipped, error, empty, added,
+            ))
+
+        self.export_worker = threading.Thread(
+            target=export_work,
+            daemon=True,
+            name="DatasetCuratorExport",
+        )
+        self.export_worker.start()
 
     def _clear_log(self):
         self.log_text.configure(state="normal")
@@ -2421,6 +2433,9 @@ class DatasetCuratorApp(tk.Tk):
 
     def _start(self, caption_only_override: bool = False):
         if self.worker and self.worker.is_alive():
+            return
+        if self.export_worker and self.export_worker.is_alive():
+            messagebox.showwarning(APP_TITLE, "Дождитесь завершения экспорта набора.")
             return
         if self.review_workers:
             messagebox.showwarning(APP_TITLE, "Сначала дождитесь завершения генерации подписи в карточке изображения.")
@@ -2703,6 +2718,9 @@ class DatasetCuratorApp(tk.Tk):
         self._append_log_lines([line])
 
     def _on_close(self):
+        if self.export_worker and self.export_worker.is_alive():
+            messagebox.showwarning(APP_TITLE, "Экспорт ещё выполняется. Дождитесь его завершения перед закрытием приложения.")
+            return
         if self.worker and self.worker.is_alive():
             if not messagebox.askyesno(APP_TITLE, "Обработка ещё выполняется. Запросить остановку и закрыть окно?", icon="warning"):
                 return
