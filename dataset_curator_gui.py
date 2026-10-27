@@ -1620,7 +1620,7 @@ class DatasetCuratorApp(tk.Tk):
         key = (group, str(source))
         card = self.review_card_widgets.get(key)
         if card:
-            for widget_name in ("generate", "caption", "caption_ru", "save", "move"):
+            for widget_name in ("generate", "translate", "caption", "caption_ru", "save", "move"):
                 card[widget_name].configure(state="disabled")
         self.v_status.set(f"Генерация описаний EN/RU: {source.name}")
         self._log(f"Генерация описаний для карточки: {source.name}")
@@ -2100,6 +2100,26 @@ class DatasetCuratorApp(tk.Tk):
                 kind = event[0]
                 if kind == "log":
                     self._log(event[1])
+                elif kind == "review_translation_result":
+                    _, group, path_text, translated, error = event
+                    key = (group, path_text)
+                    self.review_workers.pop(key, None)
+                    card = self.review_card_widgets.get(key)
+                    if card:
+                        for widget_name in ("generate", "translate", "save", "move", "caption", "caption_ru"):
+                            card[widget_name].configure(state="normal")
+                    if error:
+                        self.v_status.set(f"Ошибка перевода: {Path(path_text).name}")
+                        self._log(f"Перевод EN → RU не выполнен для {path_text}: {error}")
+                        messagebox.showerror(APP_TITLE, f"Не удалось перевести описание:\n{path_text}\n\n{error}")
+                    else:
+                        self.review_caption_ru_drafts[path_text] = translated
+                        if card:
+                            card["caption_ru"].delete("1.0", "end")
+                            card["caption_ru"].insert("1.0", translated)
+                            card["caption_state"].configure(text="Перевод подготовлен — не сохранён")
+                        self.v_status.set(f"Перевод подготовлен: {Path(path_text).name}. Нажми «Сохранить оба описания».")
+                        self._log(f"Перевод подготовлен в редакторе: {path_text}")
                 elif kind == "review_caption_result":
                     _, group, path_text, caption, caption_ru, error = event
                     key = (group, path_text)
@@ -2111,6 +2131,7 @@ class DatasetCuratorApp(tk.Tk):
                         self.review_caption_ru_drafts[path_text] = caption_ru
                     if card:
                         card["generate"].configure(state="normal")
+                        card["translate"].configure(state="normal")
                         card["save"].configure(state="normal")
                         card["move"].configure(state="normal")
                         card["caption"].configure(state="normal")
