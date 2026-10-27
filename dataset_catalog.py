@@ -27,7 +27,7 @@ REJECTED_FOLDER_STATUS = {
     "duplicate": "duplicate",
 }
 SELECTED_STATUSES = {"selected", "maybe"}
-REJECTED_STATUSES = {"rejected", "small_resolution", "blurry", "no_face", "multiple_faces", "duplicate"}
+REJECTED_STATUSES = {"rejected", "small_resolution", "blurry", "no_face", "multiple_faces", "duplicate", "error"}
 
 
 class CatalogStore:
@@ -43,12 +43,12 @@ class CatalogStore:
         connection = sqlite3.connect(str(self.db_path), timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS images (
                     path TEXT PRIMARY KEY,
@@ -87,7 +87,7 @@ class CatalogStore:
                 "clip_relative_score": "REAL",
                 "reason": "TEXT NOT NULL DEFAULT ''",
                 "error": "TEXT NOT NULL DEFAULT ''",
-                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'",
             }
             for name, declaration in required.items():
                 if name not in columns:
