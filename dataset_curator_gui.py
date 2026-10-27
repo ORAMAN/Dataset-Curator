@@ -1340,7 +1340,7 @@ class DatasetCuratorApp(tk.Tk):
                 if sync_existing:
                     added = catalog.sync_existing_files()
                 for group_name in groups:
-                    rows_by_group[group_name] = catalog.list_images(group_name)
+                    rows_by_group[group_name] = catalog.list_review_images(group_name)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             self.event_queue.put((
@@ -2253,7 +2253,7 @@ class DatasetCuratorApp(tk.Tk):
             try:
                 catalog = CatalogStore(base)
                 added = catalog.sync_existing_files()
-                if not catalog.list_images("selected"):
+                if catalog.count_images("selected") == 0:
                     empty = True
                 else:
                     exported, skipped, target = catalog.export_selected(
