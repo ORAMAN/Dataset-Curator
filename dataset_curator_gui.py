@@ -1120,7 +1120,7 @@ class DatasetCuratorApp(tk.Tk):
         ttk.Label(tab, textvariable=self.v_model_note, style="Muted.TLabel", wraplength=900).pack(anchor="w", pady=(8, 0))
 
     def _build_review_tab(self, tab: ttk.Frame, group: str):
-        """Прокручиваемый просмотр карточек изображений с редактированием sidecar-подписей."""
+        """Прокручиваемый просмотр изображений с EN/RU-описаниями из SQLite."""
         toolbar = ttk.Frame(tab)
         toolbar.pack(fill="x", pady=(0, 6))
 
@@ -1773,7 +1773,7 @@ class DatasetCuratorApp(tk.Tk):
         if not messagebox.askyesno(
             APP_TITLE,
             f"Экспортировать выбранные изображения из SQLite в папку:\\n{output}\\n\\n"
-            "Будут скопированы только записи со статусом «выбрано» и непустым английским описанием. "
+            "Будут скопированы только выбранные/пограничные записи с непустым английским описанием. "
             "Для каждого фото создастся .txt с английским описанием; переводы будут добавлены в captions_ru.csv.\\n\\n"
             "Исходные изображения и база данных останутся без изменений. Продолжить?",
             icon="question",
