@@ -9,5 +9,5 @@ mediapipe>=0.10.31,<1.0
 
 # Опционально: AI-подписи BLIP и категории CLIP.
 # Установите совместимую с вашей CUDA сборку PyTorch отдельно, затем:
-transformers>=4.45,<6
+transformers>=4.45,<5.0
 accelerate>=0.30
