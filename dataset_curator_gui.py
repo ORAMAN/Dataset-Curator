@@ -1211,11 +1211,8 @@ class DatasetCuratorApp(tk.Tk):
         if base is None or not base.is_dir():
             messagebox.showinfo(APP_TITLE, "Сначала выберите существующую исходную папку.")
             return
-        folder = base / ("selected" if group == "selected" else "rejected")
-        if folder.is_dir():
-            self._open_path(folder)
-        else:
-            messagebox.showinfo(APP_TITLE, f"Папка пока не создана:\n{folder}")
+        # В SQLite-режиме нет папок selected/rejected: оригиналы остаются в исходных местах.
+        self._open_path(base)
 
     def _on_review_tab_changed(self, _event=None):
         try:
@@ -1408,8 +1405,8 @@ class DatasetCuratorApp(tk.Tk):
         if self.worker and self.worker.is_alive():
             messagebox.showwarning(APP_TITLE, "Основная обработка ещё выполняется. Дождитесь её окончания.")
             return True
-        if any(worker.is_alive() for worker in self.review_workers.values()):
-            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи.")
+        if self.review_workers:
+            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи и получения результата.")
             return True
         return False
 
@@ -1973,7 +1970,7 @@ class DatasetCuratorApp(tk.Tk):
     def _start(self, caption_only_override: bool = False):
         if self.worker and self.worker.is_alive():
             return
-        if any(worker.is_alive() for worker in self.review_workers.values()):
+        if self.review_workers:
             messagebox.showwarning(APP_TITLE, "Сначала дождитесь завершения генерации подписи в карточке изображения.")
             return
         try:
