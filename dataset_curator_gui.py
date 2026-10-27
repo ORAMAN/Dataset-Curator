@@ -1521,6 +1521,20 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, f"Изображение не найдено:\n{source}")
             self._refresh_review_tab(group)
             return
+        current_draft = caption_widget.get("1.0", "end-1c").strip()
+        sidecar = source.with_suffix(".txt")
+        try:
+            saved_caption = sidecar.read_text(encoding="utf-8-sig").strip() if sidecar.is_file() else ""
+        except OSError:
+            saved_caption = ""
+        if current_draft and current_draft != saved_caption:
+            if not messagebox.askyesno(
+                APP_TITLE,
+                "В редакторе есть несохранённый текст. Заменить его новой AI-подписью?\n"
+                "Откажитесь, если сначала нужно сохранить ручные правки.",
+                icon="warning",
+            ):
+                return
         try:
             settings = self._get_settings()
         except Exception as exc:
@@ -1860,6 +1874,9 @@ class DatasetCuratorApp(tk.Tk):
 
     def _start(self, caption_only_override: bool = False):
         if self.worker and self.worker.is_alive():
+            return
+        if any(worker.is_alive() for worker in self.review_workers.values()):
+            messagebox.showwarning(APP_TITLE, "Сначала дождитесь завершения генерации подписи в карточке изображения.")
             return
         try:
             settings = self._get_settings()
