@@ -141,6 +141,8 @@ class Settings:
     duplicate_distance: int = 8
     duplicate_dry_run: bool = True
     generate_captions: bool = False
+    caption_only: bool = False
+    skip_existing_captions: bool = True
     caption_model: str = "Salesforce/blip-image-captioning-base"
     caption_prefix: str = ""
     classify_clip: bool = False
@@ -482,7 +484,7 @@ class DatasetProcessor:
         self.stats = {
             "selected": 0, "maybe": 0, "rejected": 0, "small_resolution": 0,
             "no_face": 0, "multiple_faces": 0, "blurry": 0, "errors": 0,
-            "duplicates": 0, "captions": 0, "processed": 0,
+            "duplicates": 0, "captions": 0, "captions_skipped": 0, "processed": 0,
         }
         self.report_rows: list[dict[str, Any]] = []
         self.services = ModelServices(settings, self.log)
@@ -621,9 +623,75 @@ class DatasetProcessor:
             self.report_rows.append(record)
             self.update_progress(index, total, source.name)
 
+    def _process_caption_only(self, source: Path, index: int, total: int) -> None:
+        """Создаёт .txt рядом с исходным изображением, не запуская фильтры и не копируя файл."""
+        from PIL import Image, ImageOps
+
+        caption_path = source.with_suffix(".txt")
+        record: dict[str, Any] = {
+            "filename": source.name, "output_file": str(caption_path), "status": "caption_error", "reason": "",
+            "width": "", "height": "", "aesthetic_score": "", "suitable_faces": "",
+            "max_face_height_percent": "", "blur_variance": "", "clip_category": "",
+            "clip_relative_score": "", "caption": "", "error": "",
+        }
+        self.log(f"[Подписи {index}/{total}] {source.name}")
+        try:
+            # Не трогаем существующий sidecar, чтобы сохранить ручную разметку.
+            if self.settings.skip_existing_captions and caption_path.exists():
+                self.stats["captions_skipped"] += 1
+                record.update(status="caption_exists", reason="Файл подписи уже существует")
+                self.log(f"  → пропуск: уже существует {caption_path.name}")
+                return
+
+            with Image.open(source) as raw:
+                image = ImageOps.exif_transpose(raw).convert("RGB")
+            width, height = image.size
+            record["width"], record["height"] = width, height
+
+            clip_category = ""
+            if self.settings.classify_clip:
+                try:
+                    clip_category, clip_score = self.services.classify(image)
+                    record["clip_category"] = clip_category
+                    record["clip_relative_score"] = round(clip_score, 6)
+                    self.log(f"  → CLIP: {clip_category} ({clip_score * 100:.1f}% среди категорий)")
+                except Exception as exc:
+                    self.log(f"  ! CLIP недоступен для {source.name}: {type(exc).__name__}: {exc}")
+
+            caption = self.services.caption(image)
+            prefix = self.settings.caption_prefix.strip().strip(",;")
+            if prefix and not caption.casefold().startswith(prefix.casefold()):
+                caption = f"{prefix}, {caption}".strip().strip(",")
+            if self.settings.append_clip_label_to_caption and clip_category:
+                if clip_category.casefold() not in caption.casefold():
+                    caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+
+            # Атомарная запись: недописанная подпись не останется при аварийном завершении.
+            temp_path = caption_path.with_suffix(caption_path.suffix + ".tmp")
+            try:
+                temp_path.write_text(caption.strip() + "\n", encoding="utf-8")
+                temp_path.replace(caption_path)
+            finally:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+            record.update(status="caption_created", reason="", caption=caption)
+            self.stats["captions"] += 1
+            self.log(f"  → создано {caption_path.name}: {caption}")
+        except Exception as exc:
+            self.stats["errors"] += 1
+            record.update(status="caption_error", reason="Ошибка генерации подписи", error=f"{type(exc).__name__}: {exc}")
+            self.log(f"  ✖ ошибка подписи: {type(exc).__name__}: {exc}")
+        finally:
+            self.stats["processed"] += 1
+            self.report_rows.append(record)
+            self.update_progress(index, total, source.name)
+
     def save_report(self) -> Path | None:
         input_dir = Path(self.settings.input_dir)
-        report = input_dir / "dataset_report.csv"
+        report = input_dir / ("caption_report.csv" if self.settings.caption_only else "dataset_report.csv")
         fields = ["filename", "output_file", "status", "reason", "width", "height", "aesthetic_score",
                   "suitable_faces", "max_face_height_percent", "blur_variance", "clip_category",
                   "clip_relative_score", "caption", "error"]
@@ -656,13 +724,19 @@ class DatasetProcessor:
         if not paths:
             raise FileNotFoundError("В выбранной папке не найдено изображений поддерживаемых форматов.")
         self.log(f"Найдено изображений в корне папки: {len(paths)}")
-        self.log("Исходные изображения не удаляются; результаты копируются в подпапки.")
+        if self.settings.caption_only:
+            self.log("РЕЖИМ «ТОЛЬКО ПОДПИСИ»: фильтры, оценка эстетики, поиск лиц и дубликатов пропускаются.")
+            self.log("Файлы изображений не копируются и не перемещаются; подписи записываются рядом с исходниками.")
+            if self.settings.skip_existing_captions:
+                self.log("Существующие .txt-файлы будут пропущены.")
+        else:
+            self.log("Исходные изображения не удаляются; результаты копируются в подпапки.")
 
         failed = False
         try:
-            if self.settings.check_faces:
+            if not self.settings.caption_only and self.settings.check_faces:
                 self.services.load_face_detector()
-            if self.settings.check_aesthetic:
+            if not self.settings.caption_only and self.settings.check_aesthetic:
                 self.services.load_aesthetic()
             # Загружаем включённые модели заранее, чтобы ошибка модели не возникала в середине набора.
             if self.settings.classify_clip:
@@ -678,7 +752,7 @@ class DatasetProcessor:
                     self.settings.generate_captions = False
                     self.log(f"Предупреждение: BLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без генерации подписей.")
 
-            if self.settings.clean_outputs:
+            if self.settings.clean_outputs and not self.settings.caption_only:
                 output_names = ("selected", "rejected", "bed_size", "blure", "no_or_small_faces", "moree_faces", "duplicate")
                 for dirname in output_names:
                     output_dir = input_dir / dirname
@@ -693,9 +767,12 @@ class DatasetProcessor:
                 if self.stop_event.is_set():
                     self.log("Остановка запрошена пользователем — новые изображения не запускаются.")
                     break
-                self._process_one(path, index, len(paths))
+                if self.settings.caption_only:
+                    self._process_caption_only(path, index, len(paths))
+                else:
+                    self._process_one(path, index, len(paths))
 
-            if self.settings.find_duplicates and not self.stop_event.is_set():
+            if self.settings.find_duplicates and not self.settings.caption_only and not self.stop_event.is_set():
                 try:
                     duplicate_count, moved_map = deduplicate_selected(self.settings, self.log, self.stop_event)
                     self.stats["duplicates"] = duplicate_count
@@ -708,7 +785,7 @@ class DatasetProcessor:
                                 row["output_file"] = moved_to
                 except Exception as exc:
                     self.log(f"Ошибка поиска дубликатов: {type(exc).__name__}: {exc}")
-            elif self.settings.find_duplicates and self.stop_event.is_set():
+            elif self.settings.find_duplicates and not self.settings.caption_only and self.stop_event.is_set():
                 self.log("Поиск дубликатов пропущен: обработка была остановлена.")
         except Exception:
             failed = True
@@ -829,6 +906,8 @@ class DatasetCuratorApp(tk.Tk):
             "duplicate_distance": tk.StringVar(value=str(merged.get("duplicate_distance", 8))),
             "duplicate_dry_run": tk.BooleanVar(value=merged.get("duplicate_dry_run", True)),
             "generate_captions": tk.BooleanVar(value=merged.get("generate_captions", False)),
+            "caption_only": tk.BooleanVar(value=merged.get("caption_only", False)),
+            "skip_existing_captions": tk.BooleanVar(value=merged.get("skip_existing_captions", True)),
             "caption_model": tk.StringVar(value=merged.get("caption_model", "Salesforce/blip-image-captioning-base")),
             "caption_prefix": tk.StringVar(value=merged.get("caption_prefix", "")),
             "classify_clip": tk.BooleanVar(value=merged.get("classify_clip", False)),
@@ -955,16 +1034,37 @@ class DatasetCuratorApp(tk.Tk):
         warning.pack(fill="x")
         ttk.Label(warning, text="Исходные файлы не удаляются: они копируются в подпапки.\nСканируются только файлы в корне выбранной папки; ранее созданные подпапки не обрабатываются повторно.", wraplength=410).pack(anchor="w")
 
+    def _on_caption_only_toggle(self):
+        # В отдельном режиме подпись обязательна; остальные фильтры во время задания игнорируются.
+        if self.v["caption_only"].get():
+            self.v["generate_captions"].set(True)
+        self._save_config_debounced()
+
     def _build_models_tab(self):
         tab = self.tab_models
         captions = ttk.LabelFrame(tab, text="Автоматические подписи для датасета", padding=10)
         captions.pack(fill="x", pady=(0, 10))
-        ttk.Checkbutton(captions, text="Генерировать .txt-подписи для изображений в selected", variable=self.v["generate_captions"]).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(captions, text="Модель:").grid(row=1, column=0, sticky="w", pady=(7, 0))
-        ttk.Entry(captions, textvariable=self.v["caption_model"]).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
-        ttk.Label(captions, text="Префикс / trigger token:").grid(row=2, column=0, sticky="w", pady=(7, 0))
-        ttk.Entry(captions, textvariable=self.v["caption_prefix"]).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
-        ttk.Label(captions, text="По умолчанию Salesforce/blip-image-captioning-base. Модель скачивается из Hugging Face при первом запуске; потом используется локальный кэш. Подписи — на английском.", style="Muted.TLabel", wraplength=850).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(captions, text="Генерировать .txt-подписи для изображений в selected при обычной фильтрации", variable=self.v["generate_captions"]).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(
+            captions,
+            text="ТОЛЬКО ПОДПИСИ — без фильтрации, оценки эстетики, детектора лиц и поиска дубликатов",
+            variable=self.v["caption_only"],
+            command=self._on_caption_only_toggle,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(
+            captions,
+            text="Пропускать изображения, у которых уже есть одноимённый .txt (не перезаписывать ручные подписи)",
+            variable=self.v["skip_existing_captions"],
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        ttk.Label(captions, text="Модель:").grid(row=3, column=0, sticky="w", pady=(7, 0))
+        ttk.Entry(captions, textvariable=self.v["caption_model"]).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
+        ttk.Label(captions, text="Префикс / trigger token:").grid(row=4, column=0, sticky="w", pady=(7, 0))
+        ttk.Entry(captions, textvariable=self.v["caption_prefix"]).grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
+        ttk.Label(
+            captions,
+            text="В режиме «ТОЛЬКО ПОДПИСИ» файлы .txt создаются рядом с исходными изображениями. Уже существующие подписи сохраняются по умолчанию. Модель Salesforce/blip-image-captioning-base загружается с Hugging Face при первом запуске; подписи обычно на английском.",
+            style="Muted.TLabel", wraplength=850,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         captions.columnconfigure(1, weight=1)
 
         clip = ttk.LabelFrame(tab, text="CLIP: классификация по заданным текстовым категориям", padding=10)
@@ -1075,6 +1175,7 @@ class DatasetCuratorApp(tk.Tk):
         clip_labels = self.clip_labels_text.get("1.0", "end").strip() if self.clip_labels_text else DEFAULT_CLIP_LABELS
         if self.v["classify_clip"].get() and len([x for x in clip_labels.splitlines() if x.strip()]) < 2:
             raise ValueError("Для CLIP нужно ввести минимум две категории, по одной на строку.")
+        caption_only = self.v["caption_only"].get()
         return Settings(
             input_dir=str(Path(input_dir).expanduser().resolve()),
             clean_outputs=self.v["clean_outputs"].get(),
@@ -1085,7 +1186,10 @@ class DatasetCuratorApp(tk.Tk):
             blur_threshold=blur_threshold, check_aesthetic=self.v["check_aesthetic"].get(),
             aesthetic_keep=keep, aesthetic_maybe=maybe, find_duplicates=self.v["find_duplicates"].get(),
             duplicate_hash=self.v["duplicate_hash"].get(), duplicate_distance=dup_distance,
-            duplicate_dry_run=self.v["duplicate_dry_run"].get(), generate_captions=self.v["generate_captions"].get(),
+            duplicate_dry_run=self.v["duplicate_dry_run"].get(),
+            generate_captions=self.v["generate_captions"].get() or caption_only,
+            caption_only=caption_only,
+            skip_existing_captions=self.v["skip_existing_captions"].get(),
             caption_model=self.v["caption_model"].get().strip() or "Salesforce/blip-image-captioning-base",
             caption_prefix=self.v["caption_prefix"].get().strip(),
             classify_clip=self.v["classify_clip"].get(), clip_model=self.v["clip_model"].get().strip() or "openai/clip-vit-base-patch32",
@@ -1257,7 +1361,7 @@ class DatasetCuratorApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
-        if settings.clean_outputs and not messagebox.askyesno(
+        if settings.clean_outputs and not settings.caption_only and not messagebox.askyesno(
             APP_TITLE,
             "Будут удалены только выходные папки этого приложения: selected, rejected, bed_size, blure, "
             "no_or_small_faces, moree_faces, duplicate, а также старый dataset_report.csv.\n"
@@ -1265,7 +1369,7 @@ class DatasetCuratorApp(tk.Tk):
             icon="warning",
         ):
             return
-        if settings.check_faces and not Path(settings.face_model_path).expanduser().is_file():
+        if not settings.caption_only and settings.check_faces and not Path(settings.face_model_path).expanduser().is_file():
             if not messagebox.askyesno(APP_TITLE, "Файл модели MediaPipe не найден. Приложение попробует скачать официальный файл при старте.\n\nПродолжить?", icon="warning"):
                 self.notebook.select(self.tab_models)
                 return
@@ -1343,7 +1447,11 @@ class DatasetCuratorApp(tk.Tk):
                     _, current, total, filename, stats = event
                     self.progress.configure(maximum=max(total, 1), value=current)
                     self.v_progress.set(f"Обработано: {current} / {total} · {filename}")
-                    self.v_summary.set(f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}")
+                    self.v_summary.set(
+                        f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
+                        if self.settings_snapshot and self.settings_snapshot.caption_only
+                        else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
+                    )
                     self.v_status.set("Обработка…")
                 elif kind == "done":
                     _, stats, report_path, stopped = event
@@ -1351,7 +1459,11 @@ class DatasetCuratorApp(tk.Tk):
                     self.start_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Остановлено пользователем" if stopped else "Готово")
-                    self.v_summary.set(f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}")
+                    self.v_summary.set(
+                        f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
+                        if self.settings_snapshot and self.settings_snapshot.caption_only
+                        else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
+                    )
                     summary = (
                         f"Обработано: {stats['processed']}\n"
                         f"selected: {stats['selected']}\n"
@@ -1363,6 +1475,7 @@ class DatasetCuratorApp(tk.Tk):
                         f"Размытые: {stats['blurry']}\n"
                         f"Ошибки: {stats['errors']}\n"
                         f"Создано подписей: {stats['captions']}\n"
+                        f"Пропущено (подпись уже существует): {stats['captions_skipped']}\n"
                         f"Кандидатов в дубликаты: {stats['duplicates']}\n\n"
                         f"CSV-отчёт: {report_path or 'не сохранён'}"
                     )
