@@ -1986,6 +1986,7 @@ class DatasetCuratorApp(tk.Tk):
         self.v_status.set("Подготовка моделей…")
         self.start_button.configure(state="disabled")
         self.caption_only_button.configure(state="disabled")
+        self.export_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.notebook.select(self.tab_log)
         self._log("=" * 68)
@@ -2013,28 +2014,33 @@ class DatasetCuratorApp(tk.Tk):
                 if kind == "log":
                     self._log(event[1])
                 elif kind == "review_caption_result":
-                    _, group, path_text, caption, error = event
+                    _, group, path_text, caption, caption_ru, error = event
                     key = (group, path_text)
                     self.review_workers.pop(key, None)
                     card = self.review_card_widgets.get(key)
                     if not error:
-                        # Сохраняем черновик в памяти, даже если карточка успела скрыться при смене вкладки.
+                        # Сохраняем оба черновика в памяти, но не записываем их в файлы.
                         self.review_caption_drafts[path_text] = caption
+                        self.review_caption_ru_drafts[path_text] = caption_ru
                     if card:
                         card["generate"].configure(state="normal")
                         card["save"].configure(state="normal")
                         card["move"].configure(state="normal")
                         card["caption"].configure(state="normal")
+                        card["caption_ru"].configure(state="normal")
                         if not error:
                             card["caption"].delete("1.0", "end")
                             card["caption"].insert("1.0", caption)
+                            card["caption_ru"].delete("1.0", "end")
+                            card["caption_ru"].insert("1.0", caption_ru)
+                            card["caption_state"].configure(text="Новые описания не сохранены")
                     if error:
                         self.v_status.set(f"Ошибка генерации: {Path(path_text).name}")
-                        self._log(f"Ошибка ручной генерации подписи для {path_text}: {error}")
-                        messagebox.showerror(APP_TITLE, f"Не удалось сгенерировать подпись для:\n{path_text}\n\n{error}")
+                        self._log(f"Ошибка генерации описания для {path_text}: {error}")
+                        messagebox.showerror(APP_TITLE, f"Не удалось сгенерировать описание для:\n{path_text}\n\n{error}")
                     else:
-                        self.v_status.set(f"Подпись сгенерирована: {Path(path_text).name}. Нажми «Сохранить подпись».")
-                        self._log(f"Подпись подготовлена в редакторе: {path_text}")
+                        self.v_status.set(f"Описания EN/RU подготовлены: {Path(path_text).name}. Нажми «Сохранить оба описания».")
+                        self._log(f"Описания подготовлены в редакторе: {path_text}")
                 elif kind == "progress":
                     _, current, total, filename, stats = event
                     self.progress.configure(maximum=max(total, 1), value=current)
@@ -2050,6 +2056,7 @@ class DatasetCuratorApp(tk.Tk):
                     self.last_stats = stats
                     self.start_button.configure(state="normal")
                     self.caption_only_button.configure(state="normal")
+                    self.export_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Остановлено пользователем" if stopped else "Готово")
                     self.v_summary.set(
@@ -2081,6 +2088,7 @@ class DatasetCuratorApp(tk.Tk):
                     self._log(details)
                     self.start_button.configure(state="normal")
                     self.caption_only_button.configure(state="normal")
+                    self.export_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Ошибка запуска")
                     messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
