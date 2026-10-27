@@ -48,6 +48,8 @@ jobs:
               "_render_review_batch", "_remove_review_card_from_cache",
               "_append_log_lines", "_handle_export_result",
               "_mark_review_tabs_dirty_and_refresh_active",
+              "_make_review_thumbnail", "_queue_review_thumbnail_result",
+              "_handle_review_thumbnail_result",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -65,6 +67,8 @@ jobs:
           assert "created < 4" in source, "Review cards must be created in small batches"
           assert "DatasetCuratorReviewLoad-" in source
           assert 'name="DatasetCuratorExport"' in source, "Export must run outside the Tkinter event loop"
+          assert "ThreadPoolExecutor(" in source, "Review thumbnails must decode outside Tkinter"
+          assert "DatasetCuratorThumb" in source
           poll_method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == "_poll_queue")
           assert not any(
               isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True
@@ -107,6 +111,11 @@ jobs:
                   "Портрет женщины при естественном освещении",
               )
               assert len(catalog.list_images("selected")) == 1
+              assert catalog.count_images("selected") == 1
+              review_row = catalog.list_review_images("selected")[0]
+              assert review_row["width"] == 1024 and review_row["height"] == 1536
+              assert review_row["description_en"] == "woman portrait, natural light"
+              assert "aesthetic_score" not in review_row, "Review query should avoid loading unrelated AI metadata"
               assert not photo.with_suffix(".txt").exists(), "Processing must not create captions next to source photos"
 
               # Repeated captions reuse the SQLite translation cache rather than calling the API twice.
