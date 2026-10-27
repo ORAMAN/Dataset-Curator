@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from dataset_catalog import CatalogStore, translate_en_ru_mymemory
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
