@@ -868,6 +868,10 @@ class DatasetCuratorApp(tk.Tk):
         self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
         self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
         self.review_workers: dict[tuple[str, str], threading.Thread] = {}
+        self.review_count_vars: dict[str, tk.StringVar] = {}
+        self.review_canvases: dict[str, tk.Canvas] = {}
+        self.review_list_frames: dict[str, ttk.Frame] = {}
+        self.review_load_more_buttons: dict[str, ttk.Button] = {}
         self._make_vars()
         self._build_ui()
         self._apply_theme(self.theme_name, persist=False)
