@@ -218,12 +218,8 @@ set /p "RUN_DEPS=Обновить Python-зависимости из requirement
 if /I "!RUN_DEPS!"=="Y" (
     set "PYTHON=C:\Program Files\Python\python.exe"
     if not exist "!PYTHON!" set "PYTHON=python"
-    where uv >nul 2>&1
-    if not errorlevel 1 (
-        uv pip install --system -r "%PROJECT_ROOT%\requirements.txt"
-    ) else (
-        "!PYTHON!" -m pip install -r "%PROJECT_ROOT%\requirements.txt"
-    )
+    REM Use the same interpreter as start_dataset_curator.bat; do not let uv select another Python.
+    "!PYTHON!" -m pip install -r "%PROJECT_ROOT%\requirements.txt"
     if errorlevel 1 (
         echo [ERROR] Установка зависимостей завершилась с ошибкой.
         goto :error
