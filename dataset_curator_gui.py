@@ -511,7 +511,8 @@ class DatasetProcessor:
             "filename": source.name, "output_file": "", "status": "error", "reason": "",
             "width": "", "height": "", "aesthetic_score": "", "suitable_faces": "",
             "max_face_height_percent": "", "blur_variance": "", "clip_category": "",
-            "clip_relative_score": "", "caption": "", "error": "",
+            "clip_relative_score": "", "caption": "", "description_ru": "", "error": "",
+            "output_file": str(source),
         }
         self.log(f"[{index}/{total}] {source.name}")
         try:
@@ -611,11 +612,17 @@ class DatasetProcessor:
                     if self.settings.append_clip_label_to_caption and clip_category:
                         if clip_category.casefold() not in caption.casefold():
                             caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
-                    caption_file = dest.with_suffix(".txt")
-                    caption_file.write_text(caption.strip() + "\n", encoding="utf-8")
                     record["caption"] = caption
+                    record["description_ru"] = ""
+                    if self.settings.translate_captions:
+                        try:
+                            russian = translate_en_ru_mymemory(caption, self.settings.translation_email)
+                            record["description_ru"] = russian
+                            self.log(f"  → перевод RU: {russian}")
+                        except Exception as translate_exc:
+                            self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
                     self.stats["captions"] += 1
-                    self.log(f"  → подпись: {caption}")
+                    self.log(f"  → подпись EN сохранена в SQLite: {caption}")
                 except Exception as exc:
                     self.log(f"  ! ошибка генерации подписи: {exc}")
                     previous = record.get("error", "")
@@ -625,28 +632,37 @@ class DatasetProcessor:
             record.update(status="error", reason="Ошибка обработки", error=f"{type(exc).__name__}: {exc}")
             self.log(f"  ✖ ошибка: {type(exc).__name__}: {exc}")
         finally:
+            try:
+                self.catalog.upsert_analysis(record, source)
+            except Exception as db_exc:
+                self.log(f"ОШИБКА SQLite для {source.name}: {type(db_exc).__name__}: {db_exc}")
+                self.stats["errors"] += 1
             self.stats["processed"] += 1
             self.report_rows.append(record)
             self.update_progress(index, total, source.name)
 
     def _process_caption_only(self, source: Path, index: int, total: int) -> None:
-        """Создаёт .txt рядом с исходным изображением, не запуская фильтры и не копируя файл."""
+        """Генерирует описания в SQLite без создания sidecar-файлов и без фильтров."""
         from PIL import Image, ImageOps
 
-        caption_path = source.with_suffix(".txt")
+        previous = self.catalog.get_image(source) or {}
         record: dict[str, Any] = {
-            "filename": source.name, "output_file": str(caption_path), "status": "caption_error", "reason": "",
-            "width": "", "height": "", "aesthetic_score": "", "suitable_faces": "",
-            "max_face_height_percent": "", "blur_variance": "", "clip_category": "",
-            "clip_relative_score": "", "caption": "", "error": "",
+            "filename": source.name, "output_file": str(source),
+            "status": previous.get("status", "pending"), "reason": previous.get("reason", ""),
+            "width": previous.get("width", ""), "height": previous.get("height", ""),
+            "aesthetic_score": previous.get("aesthetic_score", ""),
+            "suitable_faces": previous.get("suitable_faces", ""),
+            "max_face_height_percent": previous.get("max_face_height_percent", ""),
+            "blur_variance": previous.get("blur_variance", ""),
+            "clip_category": previous.get("clip_category", ""),
+            "clip_relative_score": previous.get("clip_relative_score", ""),
+            "caption": "", "description_ru": "", "error": "",
         }
         self.log(f"[Подписи {index}/{total}] {source.name}")
         try:
-            # Не трогаем существующий sidecar, чтобы сохранить ручную разметку.
-            if self.settings.skip_existing_captions and caption_path.exists():
+            if self.settings.skip_existing_captions and str(previous.get("description_en", "")).strip():
                 self.stats["captions_skipped"] += 1
-                record.update(status="caption_exists", reason="Файл подписи уже существует")
-                self.log(f"  → пропуск: уже существует {caption_path.name}")
+                self.log("  → пропуск: английское описание уже есть в SQLite")
                 return
 
             with Image.open(source) as raw:
@@ -672,51 +688,32 @@ class DatasetProcessor:
                 if clip_category.casefold() not in caption.casefold():
                     caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
 
-            # Атомарная запись: недописанная подпись не останется при аварийном завершении.
-            temp_path = caption_path.with_suffix(caption_path.suffix + ".tmp")
-            try:
-                temp_path.write_text(caption.strip() + "\n", encoding="utf-8")
-                temp_path.replace(caption_path)
-            finally:
+            record.update(reason="", caption=caption, description_ru="")
+            if self.settings.translate_captions:
                 try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-            record.update(status="caption_created", reason="", caption=caption)
+                    record["description_ru"] = translate_en_ru_mymemory(caption, self.settings.translation_email)
+                    self.log(f"  → перевод RU: {record['description_ru']}")
+                except Exception as translate_exc:
+                    self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
             self.stats["captions"] += 1
-            self.log(f"  → создано {caption_path.name}: {caption}")
+            self.log(f"  → описание EN подготовлено для SQLite: {caption}")
         except Exception as exc:
             self.stats["errors"] += 1
             record.update(status="caption_error", reason="Ошибка генерации подписи", error=f"{type(exc).__name__}: {exc}")
             self.log(f"  ✖ ошибка подписи: {type(exc).__name__}: {exc}")
         finally:
+            try:
+                self.catalog.upsert_analysis(record, source)
+            except Exception as db_exc:
+                self.log(f"ОШИБКА SQLite для {source.name}: {type(db_exc).__name__}: {db_exc}")
+                self.stats["errors"] += 1
             self.stats["processed"] += 1
             self.report_rows.append(record)
             self.update_progress(index, total, source.name)
 
     def save_report(self) -> Path | None:
-        input_dir = Path(self.settings.input_dir)
-        report = input_dir / ("caption_report.csv" if self.settings.caption_only else "dataset_report.csv")
-        fields = ["filename", "output_file", "status", "reason", "width", "height", "aesthetic_score",
-                  "suitable_faces", "max_face_height_percent", "blur_variance", "clip_category",
-                  "clip_relative_score", "caption", "error"]
-        temp = report.with_suffix(".csv.tmp")
-        try:
-            with temp.open("w", encoding="utf-8-sig", newline="") as stream:
-                writer = csv.DictWriter(stream, fieldnames=fields, delimiter=";")
-                writer.writeheader()
-                writer.writerows(self.report_rows)
-            temp.replace(report)
-            return report
-        except Exception as exc:
-            self.log(f"Не удалось сохранить CSV-отчёт: {exc}")
-            try:
-                if temp.exists():
-                    temp.unlink()
-            except Exception:
-                pass
-            return None
+        """Вместо CSV возвращает путь к базе SQLite; никаких итоговых файлов не создаём."""
+        return self.catalog.db_path
 
     def run(self) -> None:
         started = time.monotonic()
