@@ -1046,9 +1046,8 @@ class DatasetCuratorApp(tk.Tk):
         ttk.Label(warning, text="Исходные файлы не удаляются: они копируются в подпапки.\nСканируются только файлы в корне выбранной папки; ранее созданные подпапки не обрабатываются повторно.", wraplength=410).pack(anchor="w")
 
     def _on_caption_only_toggle(self):
-        # В отдельном режиме подпись обязательна; остальные фильтры во время задания игнорируются.
-        if self.v["caption_only"].get():
-            self.v["generate_captions"].set(True)
+        # Отдельный режим сам включает генерацию подписей при построении Settings,
+        # не меняя настройку создания подписей в обычном режиме фильтрации.
         self._schedule_save_config()
 
     def _build_models_tab(self):
