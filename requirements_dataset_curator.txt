@@ -1,0 +1,13 @@
+# Основная обработка изображений
+Pillow>=10.0
+numpy>=1.26
+opencv-python>=4.8
+imagehash>=4.3
+aesthetic-predictor>=0.1.2
+# Ограничение <1.0 оставляет совместимость с API MediaPipe Tasks, которое использует скрипт.
+mediapipe>=0.10.31,<1.0
+
+# Опционально: AI-подписи BLIP и категории CLIP.
+# Установите совместимую с вашей CUDA сборку PyTorch отдельно, затем:
+transformers>=4.45,<6
+accelerate>=0.30

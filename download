@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+env/
+.python-version
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local configuration and secrets
+dataset_curator_settings.json
+dataset_curator_settings.json.tmp
+hf_token.txt
+.env
+.env.*
+
+# Downloaded model assets (do not commit large model weights)
+blaze_face_short_range.tflite
+*.tflite.download
+
+# Runtime reports and temporary files
+dataset_report.csv
+*.tmp
+*.log
+
+# Dataset output folders
+selected/
+rejected/
+bed_size/
+blure/
+blure*/
+no_or_small_faces/
+moree_faces/
+duplicate/
