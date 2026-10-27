@@ -1137,7 +1137,7 @@ class DatasetCuratorApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
 
         ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
-        ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g)).pack(side="right")
+        ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g, reset=True, sync_existing=True)).pack(side="right")
         ttk.Button(
             toolbar,
             text="Открыть папку",
@@ -1486,15 +1486,67 @@ class DatasetCuratorApp(tk.Tk):
                     text="Все изображения показаны" if total else "Нет изображений",
                 )
 
+    def _remove_review_card_from_cache(self, group: str, source: Path):
+        """Удаляет одну карточку из текущей вкладки без пересоздания остальных."""
+        source_text = str(source)
+        files = self.review_file_cache.get(group, [])
+        try:
+            removed_index = files.index(source)
+            files.pop(removed_index)
+        except ValueError:
+            removed_index = -1
+
+        old_visible = self.review_visible_count.get(group, 0)
+        card = self.review_card_widgets.pop((group, source_text), None)
+        if card:
+            frame = card.get("frame")
+            if frame is not None:
+                try:
+                    frame.destroy()
+                except tk.TclError:
+                    pass
+            photo = card.get("photo")
+            if photo is not None:
+                try:
+                    self.review_photo_refs[group].remove(photo)
+                except (ValueError, KeyError):
+                    pass
+
+        self.review_record_cache.get(group, {}).pop(source_text, None)
+        if removed_index >= 0 and removed_index < old_visible:
+            self.review_visible_count[group] = max(0, old_visible - 1)
+
+        self.review_render_generation[group] += 1
+        generation = self.review_render_generation[group]
+        self.review_rendering[group] = False
+        self.review_render_target[group] = min(
+            len(files), max(self.review_visible_count[group], self.review_render_target.get(group, 0))
+        )
+        if self.review_visible_count[group] < self.review_render_target[group]:
+            self.review_rendering[group] = True
+            self.after(1, lambda g=group, gen=generation: self._render_review_batch(g, gen))
+
+        list_frame = self.review_list_frames.get(group)
+        if list_frame is not None and not files:
+            for child in list_frame.winfo_children():
+                child.destroy()
+            ttk.Label(
+                list_frame,
+                text="В этой вкладке пока нет изображений.",
+                style="Muted.TLabel",
+                padding=20,
+            ).pack(anchor="w")
+        canvas = self.review_canvases.get(group)
+        if canvas is not None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        self._update_review_controls(group)
+
     def _build_review_card(self, list_frame: ttk.Frame, group: str, source: Path):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
         card.pack(fill="x", padx=5, pady=5)
 
-        record = self.review_record_cache.get(group, {}).get(str(source))
-        if record is None:
-            catalog = self._catalog_for_current_folder()
-            record = catalog.get_image(source) if catalog else {}
-        record = record or {}
+        record = self.review_record_cache.get(group, {}).get(str(source)) or {}
+        thumbnail = None
 
         preview_frame = ttk.Frame(card, width=166, height=184)
         preview_frame.pack(side="left", fill="y", padx=(0, 10))
@@ -1625,6 +1677,8 @@ class DatasetCuratorApp(tk.Tk):
             "caption_state": caption_state,
             "group": group,
             "path": source,
+            "frame": card,
+            "photo": thumbnail,
         }
 
     def _show_review_image(self, source: Path):
