@@ -580,29 +580,34 @@ class DatasetProcessor:
                     record["error"] = f"CLIP: {exc}"
 
             if self.settings.generate_captions:
-                try:
-                    caption = self.services.caption(image)
-                    prefix = self.settings.caption_prefix.strip().strip(",;")
-                    if prefix and not caption.casefold().startswith(prefix.casefold()):
-                        caption = f"{prefix}, {caption}".strip().strip(",")
-                    if self.settings.append_clip_label_to_caption and clip_category:
-                        if clip_category.casefold() not in caption.casefold():
-                            caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
-                    record["caption"] = caption
-                    record["description_ru"] = ""
-                    if self.settings.translate_captions:
-                        try:
-                            russian = self.catalog.translate_en_ru(caption, self.settings.translation_email)
-                            record["description_ru"] = russian
-                            self.log(f"  → перевод RU: {russian}")
-                        except Exception as translate_exc:
-                            self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
-                    self.stats["captions"] += 1
-                    self.log(f"  → подпись EN сохранена в SQLite: {caption}")
-                except Exception as exc:
-                    self.log(f"  ! ошибка генерации подписи: {exc}")
-                    previous = record.get("error", "")
-                    record["error"] = (previous + " | " if previous else "") + f"BLIP: {exc}"
+                previous_description = self.catalog.get_image(source) or {}
+                if self.settings.skip_existing_captions and str(previous_description.get("description_en") or "").strip():
+                    self.stats["captions_skipped"] += 1
+                    self.log("  → подпись пропущена: английское описание уже есть в SQLite")
+                else:
+                    try:
+                        caption = self.services.caption(image)
+                        prefix = self.settings.caption_prefix.strip().strip(",;")
+                        if prefix and not caption.casefold().startswith(prefix.casefold()):
+                            caption = f"{prefix}, {caption}".strip().strip(",")
+                        if self.settings.append_clip_label_to_caption and clip_category:
+                            if clip_category.casefold() not in caption.casefold():
+                                caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+                        record["caption"] = caption
+                        record["description_ru"] = ""
+                        if self.settings.translate_captions:
+                            try:
+                                russian = self.catalog.translate_en_ru(caption, self.settings.translation_email)
+                                record["description_ru"] = russian
+                                self.log(f"  → перевод RU: {russian}")
+                            except Exception as translate_exc:
+                                self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
+                        self.stats["captions"] += 1
+                        self.log(f"  → подпись EN сохранена в SQLite: {caption}")
+                    except Exception as exc:
+                        self.log(f"  ! ошибка генерации подписи: {exc}")
+                        previous = record.get("error", "")
+                        record["error"] = (previous + " | " if previous else "") + f"BLIP: {exc}"
         except Exception as exc:
             self.stats["errors"] += 1
             record.update(status="error", reason="Ошибка обработки", error=f"{type(exc).__name__}: {exc}")
