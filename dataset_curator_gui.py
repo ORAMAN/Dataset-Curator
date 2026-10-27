@@ -486,11 +486,10 @@ class DatasetProcessor:
         from PIL import Image, ImageOps
 
         record: dict[str, Any] = {
-            "filename": source.name, "output_file": "", "status": "error", "reason": "",
+            "filename": source.name, "output_file": str(source), "status": "error", "reason": "",
             "width": "", "height": "", "aesthetic_score": "", "suitable_faces": "",
             "max_face_height_percent": "", "blur_variance": "", "clip_category": "",
             "clip_relative_score": "", "caption": "", "description_ru": "", "error": "",
-            "output_file": str(source),
         }
         self.log(f"[{index}/{total}] {source.name}")
         try:
@@ -676,7 +675,7 @@ class DatasetProcessor:
             self.log(f"  → описание EN подготовлено для SQLite: {caption}")
         except Exception as exc:
             self.stats["errors"] += 1
-            record.update(status="caption_error", reason="Ошибка генерации подписи", error=f"{type(exc).__name__}: {exc}")
+            record.update(reason="Ошибка генерации подписи", error=f"{type(exc).__name__}: {exc}")
             self.log(f"  ✖ ошибка подписи: {type(exc).__name__}: {exc}")
         finally:
             try:
