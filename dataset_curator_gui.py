@@ -1296,7 +1296,7 @@ class DatasetCuratorApp(tk.Tk):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
         card.pack(fill="x", padx=5, pady=5)
 
-        preview_frame = ttk.Frame(card, width=156)
+        preview_frame = ttk.Frame(card, width=156, height=160)
         preview_frame.pack(side="left", fill="y", padx=(0, 10))
         preview_frame.pack_propagate(False)
         try:
