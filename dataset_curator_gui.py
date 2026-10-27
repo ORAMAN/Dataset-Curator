@@ -398,46 +398,48 @@ class UnionFind:
             self.rank[ra] += 1
 
 
-def deduplicate_selected(settings: Settings, log: Callable[[str], None], stop_event: threading.Event) -> tuple[int, dict[str, str]]:
-    """Группирует near-duplicates транзитивно; предпочтение — разрешению, затем размеру файла."""
+def deduplicate_selected(
+    settings: Settings,
+    log: Callable[[str], None],
+    stop_event: threading.Event,
+    catalog: CatalogStore | None = None,
+) -> tuple[int, dict[str, str]]:
+    """Ищет near-duplicates среди выбранных записей и при подтверждённом режиме меняет только статус в SQLite."""
     import imagehash
     from PIL import Image, ImageOps
 
-    selected_dir = Path(settings.input_dir) / "selected"
-    duplicate_dir = Path(settings.input_dir) / "duplicate"
-    if not selected_dir.is_dir():
-        log("Папки selected нет — поиск дубликатов пропущен.")
-        return 0, {}
-    paths = sorted(p for p in selected_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
+    catalog = catalog or CatalogStore(settings.input_dir)
+    rows = catalog.list_images("selected")
+    paths = [Path(row["path"]) for row in rows if Path(row["path"]).is_file()]
     if len(paths) < 2:
-        log("Для поиска дубликатов недостаточно изображений.")
+        log("Для поиска дубликатов в выбранном каталоге недостаточно изображений.")
         return 0, {}
 
     hash_func = getattr(imagehash, settings.duplicate_hash)
-    hashes: list[int] = []
-    quality: list[tuple[int, int]] = []  # пиксели, байты
+    quality: list[tuple[int, int]] = []
     valid_paths: list[Path] = []
     tree = BKTree()
     uf = UnionFind(len(paths))
-    log(f"Ищу near-duplicates в selected: {len(paths)} файлов, {settings.duplicate_hash}, порог {settings.duplicate_distance}…")
+    log(
+        f"Ищу near-duplicates среди выбранных записей SQLite: {len(paths)} файлов, "
+        f"{settings.duplicate_hash}, порог {settings.duplicate_distance}…"
+    )
 
-    for original_index, path in enumerate(paths, 1):
+    for path in paths:
         if stop_event.is_set():
             log("Поиск дубликатов остановлен пользователем.")
             return 0, {}
         try:
             with Image.open(path) as raw:
                 img = ImageOps.exif_transpose(raw).convert("RGB")
-                w, h = img.size
+                width, height = img.size
                 hash_value = int(str(hash_func(img)), 16)
-            # Индексы соответствуют valid_paths, а не исходному списку.
             idx = len(valid_paths)
             for other in tree.query(hash_value, settings.duplicate_distance):
                 uf.union(idx, other)
             tree.add(hash_value, idx)
             valid_paths.append(path)
-            hashes.append(hash_value)
-            quality.append((w * h, path.stat().st_size))
+            quality.append((width * height, path.stat().st_size))
         except Exception as exc:
             log(f"Не удалось вычислить хеш {path.name}: {exc}")
 
@@ -451,9 +453,8 @@ def deduplicate_selected(settings: Settings, log: Callable[[str], None], stop_ev
 
     log(f"Найдено групп похожих изображений: {len(duplicate_groups)}")
     duplicate_count = 0
-    moved_map: dict[str, str] = {}
+    duplicate_map: dict[str, str] = {}
     for group in duplicate_groups:
-        # Детерминированно сохраняем файл с наибольшим количеством пикселей, затем — размером.
         ordered = sorted(group, key=lambda i: (quality[i][0], quality[i][1]), reverse=True)
         keeper = valid_paths[ordered[0]]
         log(f"Оставляю: {keeper.name} ({quality[ordered[0]][0]:,} пикс.)")
@@ -463,21 +464,20 @@ def deduplicate_selected(settings: Settings, log: Callable[[str], None], stop_ev
             log(f"  Похожий: {duplicate.name}" + (" [тестовый режим]" if settings.duplicate_dry_run else ""))
             if not settings.duplicate_dry_run:
                 try:
-                    old_path = str(duplicate)
-                    moved_path = safe_move(duplicate, duplicate_dir)
-                    moved_map[old_path] = str(moved_path)
-                    # Перемещаем и подпись BLIP, если она существует рядом с исходным изображением.
-                    sidecar = duplicate.with_suffix(".txt")
-                    if sidecar.is_file():
-                        safe_move(sidecar, duplicate_dir)
-                    log(f"  Перемещён в: {moved_path}")
+                    catalog.set_status(
+                        duplicate, "duplicate",
+                        reason=f"Near-duplicate: выбран более качественный оригинал {keeper.name}",
+                    )
+                    duplicate_map[str(duplicate)] = str(duplicate)
+                    log(f"  → статус duplicate сохранён в SQLite; файл оставлен на месте")
                 except Exception as exc:
-                    log(f"  Ошибка перемещения {duplicate.name}: {exc}")
+                    log(f"  Ошибка обновления записи SQLite для {duplicate.name}: {exc}")
+
     if settings.duplicate_dry_run:
-        log(f"Тестовый режим: найдено кандидатов на перемещение — {duplicate_count}. Файлы не изменены.")
+        log(f"Тестовый режим: найдено кандидатов — {duplicate_count}. Статусы и файлы не изменены.")
     else:
-        log(f"Перемещение завершено. Обработано кандидатов: {duplicate_count}.")
-    return duplicate_count, moved_map
+        log(f"В SQLite помечено как duplicate: {len(duplicate_map)}. Файлы не перемещались.")
+    return duplicate_count, duplicate_map
 
 
 class DatasetProcessor:
