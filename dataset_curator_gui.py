@@ -858,6 +858,18 @@ class DatasetCuratorApp(tk.Tk):
         self.review_canvases: dict[str, tk.Canvas] = {}
         self.review_list_frames: dict[str, ttk.Frame] = {}
         self.review_load_more_buttons: dict[str, ttk.Button] = {}
+        # Асинхронная загрузка каталога и поэтапное создание карточек, чтобы Tk не зависал.
+        self.review_loaded: dict[str, bool] = {"selected": False, "rejected": False}
+        self.review_dirty: dict[str, bool] = {"selected": True, "rejected": True}
+        self.review_base_paths: dict[str, str] = {"selected": "", "rejected": ""}
+        self.review_loading: dict[str, bool] = {"selected": False, "rejected": False}
+        self.review_load_generation: dict[str, int] = {"selected": 0, "rejected": 0}
+        self.review_render_generation: dict[str, int] = {"selected": 0, "rejected": 0}
+        self.review_render_target: dict[str, int] = {"selected": 0, "rejected": 0}
+        self.review_rendering: dict[str, bool] = {"selected": False, "rejected": False}
+        self.review_catalog_request_id = 0
+        self.review_load_workers: dict[int, threading.Thread] = {}
+        self.export_worker: threading.Thread | None = None
         self._make_vars()
         self._build_ui()
         self._apply_theme(self.theme_name, persist=False)
@@ -1196,12 +1208,34 @@ class DatasetCuratorApp(tk.Tk):
         self._open_path(base)
 
     def _on_review_tab_changed(self, _event=None):
+        """Не перечитывает базу и не пересоздаёт карточки при каждом возврате на вкладку."""
         try:
             selected_tab = self.notebook.select()
             if selected_tab == str(self.tab_selected):
-                self._refresh_review_tab("selected")
+                group = "selected"
             elif selected_tab == str(self.tab_rejected):
-                self._refresh_review_tab("rejected")
+                group = "rejected"
+            else:
+                return
+
+            base = self._review_input_dir()
+            if base is None or not base.is_dir():
+                self._clear_review_group(group, "Выберите существующую исходную папку выше.")
+                return
+            base_text = str(base)
+            known_bases = [value for value in self.review_base_paths.values() if value]
+            if known_bases and any(value != base_text for value in known_bases):
+                self._refresh_all_review_tabs(sync_existing=True)
+            elif not any(self.review_loaded.values()):
+                if not any(self.review_loading.values()):
+                    self._refresh_all_review_tabs(sync_existing=True)
+            elif (
+                not self.review_loaded.get(group, False)
+                or self.review_dirty.get(group, True)
+                or self.review_base_paths.get(group) != base_text
+            ):
+                if not self.review_loading.get(group, False):
+                    self._refresh_review_tab(group, reset=True, sync_existing=False)
         except tk.TclError:
             pass
 
@@ -1217,6 +1251,7 @@ class DatasetCuratorApp(tk.Tk):
         return catalog
 
     def _review_files(self, group: str) -> list[Path]:
+        """Синхронный вспомогательный метод для тестов; GUI загружает списки в фоне."""
         catalog = self._catalog_for_current_folder(sync_existing=True)
         if catalog is None:
             self.review_record_cache[group] = {}
@@ -1225,58 +1260,231 @@ class DatasetCuratorApp(tk.Tk):
         self.review_record_cache[group] = {str(row["path"]): row for row in rows}
         return [Path(row["path"]) for row in rows]
 
-    def _refresh_all_review_tabs(self):
-        self._refresh_review_tab("selected", reset=True)
-        self._refresh_review_tab("rejected", reset=True)
+    def _refresh_all_review_tabs(self, sync_existing: bool = True):
+        """Один фоновый проход по папке и базе для обеих вкладок."""
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            self.review_catalog_request_id += 1
+            for group in ("selected", "rejected"):
+                self._clear_review_group(group, "Выберите существующую исходную папку выше.")
+            return
+        self._launch_review_catalog_load(("selected", "rejected"), base, sync_existing)
 
-    def _refresh_review_tab(self, group: str, reset: bool = True):
+    def _refresh_review_tab(self, group: str, reset: bool = True, sync_existing: bool = False):
         if group not in self.review_list_frames:
             return
-        if reset:
-            # При обычном обновлении повторно считываем каталоги и Sidecar подписи.
-            self.review_file_cache[group] = self._review_files(group)
-            self.review_visible_count[group] = 0
-            for key in [key for key in self.review_card_widgets if key[0] == group]:
-                self.review_card_widgets.pop(key, None)
-            self.review_photo_refs[group] = []
-            list_frame = self.review_list_frames[group]
-            for child in list_frame.winfo_children():
-                child.destroy()
+        if not reset:
+            if not self.review_loaded.get(group) or self.review_dirty.get(group):
+                self._refresh_review_tab(group, reset=True, sync_existing=False)
+                return
+            if self.review_loading.get(group) or self.review_rendering.get(group):
+                return
+            files = self.review_file_cache.get(group, [])
+            self.review_render_target[group] = min(
+                len(files), max(self.review_visible_count.get(group, 0), self.review_render_target.get(group, 0))
+                + self.review_page_size,
+            )
+            if self.review_visible_count.get(group, 0) < self.review_render_target[group]:
+                self.review_render_generation[group] += 1
+                generation = self.review_render_generation[group]
+                self.review_rendering[group] = True
+                self._update_review_controls(group)
+                self._render_review_batch(group, generation)
+            return
 
-        files = self.review_file_cache.get(group, [])
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            self._clear_review_group(group, "Выберите существующую исходную папку выше.")
+            return
+        if self.review_loading.get(group) and not sync_existing:
+            return
+        self._launch_review_catalog_load((group,), base, sync_existing)
+
+    def _launch_review_catalog_load(
+        self,
+        groups: tuple[str, ...],
+        base: Path,
+        sync_existing: bool,
+    ):
+        self.review_catalog_request_id += 1
+        request_id = self.review_catalog_request_id
+        base_text = str(base)
+        for group in groups:
+            self.review_load_generation[group] = request_id
+            self.review_loading[group] = True
+            self.review_dirty[group] = True
+            if not self.review_list_frames[group].winfo_children():
+                ttk.Label(
+                    self.review_list_frames[group],
+                    text="Загрузка каталога в фоновом режиме…",
+                    style="Muted.TLabel",
+                    padding=20,
+                ).pack(anchor="w")
+            if group in self.review_count_vars:
+                self.review_count_vars[group].set("Загрузка каталога…")
+            self._update_review_controls(group)
+
+        def load_catalog():
+            rows_by_group: dict[str, list[dict[str, Any]]] = {}
+            added = 0
+            error = ""
+            try:
+                catalog = CatalogStore(base)
+                if sync_existing:
+                    added = catalog.sync_existing_files()
+                for group_name in groups:
+                    rows_by_group[group_name] = catalog.list_images(group_name)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            self.event_queue.put((
+                "review_catalog_result", request_id, base_text, groups,
+                rows_by_group, added, error,
+            ))
+
+        worker = threading.Thread(
+            target=load_catalog,
+            daemon=True,
+            name=f"DatasetCuratorReviewLoad-{request_id}",
+        )
+        self.review_load_workers[request_id] = worker
+        worker.start()
+
+    def _handle_review_catalog_result(self, event: tuple):
+        _, request_id, base_text, groups, rows_by_group, added, error = event
+        self.review_load_workers.pop(request_id, None)
+        current_base = self._review_input_dir()
+        current_base_text = str(current_base) if current_base is not None else ""
+        for group in groups:
+            if self.review_load_generation.get(group) != request_id:
+                continue
+            self.review_loading[group] = False
+            if current_base_text != base_text:
+                self.review_dirty[group] = True
+                self._update_review_controls(group)
+                continue
+            if error:
+                self.review_dirty[group] = True
+                self.v_status.set(f"Не удалось загрузить каталог ({group})")
+                self._log(f"Ошибка фоновой загрузки каталога {base_text}: {error}")
+                self._update_review_controls(group)
+                continue
+            self._apply_review_rows(group, rows_by_group.get(group, []), base_text)
+        if added:
+            self._log(f"SQLite: добавлено записей об изображениях — {added}")
+
+    def _apply_review_rows(self, group: str, rows: list[dict[str, Any]], base_text: str):
+        """Обновляет только запрошенную вкладку, затем создаёт карточки небольшими порциями."""
+        for key in [key for key in self.review_card_widgets if key[0] == group]:
+            self.review_card_widgets.pop(key, None)
         list_frame = self.review_list_frames[group]
-        old_count = self.review_visible_count.get(group, 0)
-        end = min(len(files), old_count + self.review_page_size)
-        if not files and old_count == 0:
+        for child in list_frame.winfo_children():
+            child.destroy()
+
+        self.review_record_cache[group] = {
+            str(row["path"]): row for row in rows
+        }
+        self.review_file_cache[group] = [Path(row["path"]) for row in rows]
+        self.review_base_paths[group] = base_text
+        self.review_loaded[group] = True
+        self.review_dirty[group] = False
+        self.review_visible_count[group] = 0
+        self.review_render_target[group] = min(self.review_page_size, len(rows))
+        self.review_photo_refs[group] = []
+        self.review_render_generation[group] += 1
+        generation = self.review_render_generation[group]
+        self.review_rendering[group] = bool(self.review_render_target[group])
+
+        if not rows:
             base = self._review_input_dir()
             if base is None or not base.is_dir():
                 text = "Выберите существующую исходную папку выше."
             elif group == "selected":
-                text = "Папка selected пока не содержит обработанных изображений."
+                text = "Выбранных изображений пока нет."
             else:
                 text = "Пока нет отклонённых изображений."
             ttk.Label(list_frame, text=text, style="Muted.TLabel", padding=20).pack(anchor="w")
-        else:
-            for index in range(old_count, end):
-                path = files[index]
-                self._build_review_card(list_frame, group, path)
-        self.review_visible_count[group] = end
 
-        if group in self.review_count_vars:
-            self.review_count_vars[group].set(
-                f"{'Выбранные' if group == 'selected' else 'Отбракованные'} — {len(files)} файлов "
-                f"(показано {end})"
-            )
-        button = self.review_load_more_buttons.get(group)
-        if button is not None:
-            button.configure(state="normal" if end < len(files) else "disabled")
-            if end < len(files):
-                button.configure(text=f"Показать ещё ({min(self.review_page_size, len(files) - end)})")
-            else:
-                button.configure(text="Все изображения показаны" if files else "Нет изображений")
+        self._update_review_controls(group)
         canvas = self.review_canvases.get(group)
         if canvas is not None:
             canvas.configure(scrollregion=canvas.bbox("all"))
+        if self.review_rendering[group]:
+            self._render_review_batch(group, generation)
+
+    def _clear_review_group(self, group: str, message: str):
+        self.review_load_generation[group] = self.review_catalog_request_id + 1
+        self.review_loading[group] = False
+        self.review_loaded[group] = False
+        self.review_dirty[group] = True
+        self.review_base_paths[group] = ""
+        self.review_file_cache[group] = []
+        self.review_record_cache[group] = {}
+        self.review_visible_count[group] = 0
+        self.review_render_target[group] = 0
+        self.review_rendering[group] = False
+        self.review_render_generation[group] += 1
+        for key in [key for key in self.review_card_widgets if key[0] == group]:
+            self.review_card_widgets.pop(key, None)
+        self.review_photo_refs[group] = []
+        list_frame = self.review_list_frames.get(group)
+        if list_frame is not None:
+            for child in list_frame.winfo_children():
+                child.destroy()
+            ttk.Label(list_frame, text=message, style="Muted.TLabel", padding=20).pack(anchor="w")
+        self._update_review_controls(group)
+
+    def _render_review_batch(self, group: str, generation: int):
+        """Создаёт несколько карточек за проход, оставляя Tk event loop отзывчивым."""
+        if generation != self.review_render_generation.get(group):
+            return
+        files = self.review_file_cache.get(group, [])
+        list_frame = self.review_list_frames[group]
+        started = time.perf_counter()
+        created = 0
+        target = min(self.review_render_target.get(group, 0), len(files))
+        while (
+            self.review_visible_count.get(group, 0) < target
+            and created < 4
+            and time.perf_counter() - started < 0.012
+        ):
+            index = self.review_visible_count[group]
+            self._build_review_card(list_frame, group, files[index])
+            self.review_visible_count[group] = index + 1
+            created += 1
+
+        canvas = self.review_canvases.get(group)
+        if canvas is not None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        more = self.review_visible_count.get(group, 0) < target
+        self.review_rendering[group] = more
+        self._update_review_controls(group)
+        if more:
+            self.after(1, lambda g=group, gen=generation: self._render_review_batch(g, gen))
+
+    def _update_review_controls(self, group: str):
+        total = len(self.review_file_cache.get(group, []))
+        shown = self.review_visible_count.get(group, 0)
+        label = "Выбранные" if group == "selected" else "Отбракованные"
+        if group in self.review_count_vars:
+            suffix = " · загрузка…" if self.review_loading.get(group) else ""
+            self.review_count_vars[group].set(
+                f"{label} — {total} файлов (показано {shown}){suffix}"
+            )
+        button = self.review_load_more_buttons.get(group)
+        if button is not None:
+            busy = self.review_loading.get(group, False) or self.review_rendering.get(group, False)
+            if busy:
+                button.configure(state="disabled", text="Подготовка списка…")
+            elif shown < total:
+                button.configure(
+                    state="normal",
+                    text=f"Показать ещё ({min(self.review_page_size, total - shown)})",
+                )
+            else:
+                button.configure(
+                    state="disabled",
+                    text="Все изображения показаны" if total else "Нет изображений",
+                )
 
     def _build_review_card(self, list_frame: ttk.Frame, group: str, source: Path):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
