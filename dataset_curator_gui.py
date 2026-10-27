@@ -721,19 +721,24 @@ class DatasetProcessor:
         if not input_dir.is_dir():
             raise NotADirectoryError(f"Папка не существует: {input_dir}")
 
-        # Скрипт намеренно обрабатывает только изображения непосредственно в исходной папке:
-        # папки selected/rejected/bed_size не попадут в повторный обход.
+        # Синхронизируем только записи каталога. Исходные фото остаются на местах;
+        # существующие старые папки selected/rejected импортируются в БД без изменений.
+        imported = self.catalog.sync_existing_files()
         paths = sorted(p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
         if not paths:
-            raise FileNotFoundError("В выбранной папке не найдено изображений поддерживаемых форматов.")
+            # В базе могут остаться ранее импортированные фото только из папок результата.
+            if not self.catalog.list_images("selected") and not self.catalog.list_images("rejected"):
+                raise FileNotFoundError("В выбранной папке и каталоге SQLite не найдено изображений.")
         self.log(f"Найдено изображений в корне папки: {len(paths)}")
+        self.log(f"SQLite: {self.catalog.db_path}")
+        if imported:
+            self.log(f"Добавлено в каталог записей о существующих изображениях: {imported}")
+        self.log("Исходные изображения не перемещаются и не копируются. Статусы и описания хранятся в SQLite.")
         if self.settings.caption_only:
-            self.log("РЕЖИМ «ТОЛЬКО ПОДПИСИ»: фильтры, оценка эстетики, поиск лиц и дубликатов пропускаются.")
-            self.log("Файлы изображений не копируются и не перемещаются; подписи записываются рядом с исходниками.")
+            self.log("РЕЖИМ «ТОЛЬКО ПОДПИСИ»: проверки разрешения, лиц, резкости, эстетики и дубликатов пропускаются.")
+            self.log("Подписи EN/RU записываются в базу данных, а не в файлы .txt.")
             if self.settings.skip_existing_captions:
-                self.log("Существующие .txt-файлы будут пропущены.")
-        else:
-            self.log("Исходные изображения не удаляются; результаты копируются в подпапки.")
+                self.log("Изображения с непустым description_en в SQLite будут пропущены.")
 
         failed = False
         try:
@@ -760,16 +765,9 @@ class DatasetProcessor:
                     self.settings.generate_captions = False
                     self.log(f"Предупреждение: BLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без генерации подписей.")
 
-            if self.settings.clean_outputs and not self.settings.caption_only:
-                output_names = ("selected", "rejected", "bed_size", "blure", "no_or_small_faces", "moree_faces", "duplicate")
-                for dirname in output_names:
-                    output_dir = input_dir / dirname
-                    if output_dir.is_dir() and not output_dir.is_symlink():
-                        shutil.rmtree(output_dir)
-                        self.log(f"Очищена предыдущая папка результата: {dirname}")
-                old_report = input_dir / "dataset_report.csv"
-                if old_report.is_file():
-                    old_report.unlink()
+            # Настройка clean_outputs намеренно не удаляет каталоги при работе с SQLite.
+            if self.settings.clean_outputs:
+                self.log("Очистка файлов отключена в режиме SQLite: никаких каталогов или изображений не удаляется.")
 
             for index, path in enumerate(paths, 1):
                 if self.stop_event.is_set():
@@ -782,15 +780,16 @@ class DatasetProcessor:
 
             if self.settings.find_duplicates and not self.settings.caption_only and not self.stop_event.is_set():
                 try:
-                    duplicate_count, moved_map = deduplicate_selected(self.settings, self.log, self.stop_event)
+                    duplicate_count, duplicate_map = deduplicate_selected(
+                        self.settings, self.log, self.stop_event, catalog=self.catalog
+                    )
                     self.stats["duplicates"] = duplicate_count
-                    if moved_map:
+                    if duplicate_map:
                         for row in self.report_rows:
-                            moved_to = moved_map.get(str(row.get("output_file", "")))
-                            if moved_to:
+                            path_text = str(row.get("output_file", ""))
+                            if path_text in duplicate_map:
                                 row["status"] = "duplicate"
-                                row["reason"] = "Near-duplicate; перемещён после сравнения хешей"
-                                row["output_file"] = moved_to
+                                row["reason"] = "Near-duplicate; помечен в SQLite, файл оставлен на месте"
                 except Exception as exc:
                     self.log(f"Ошибка поиска дубликатов: {type(exc).__name__}: {exc}")
             elif self.settings.find_duplicates and not self.settings.caption_only and self.stop_event.is_set():
@@ -802,7 +801,7 @@ class DatasetProcessor:
             report = self.save_report()
             self.services.close()
             elapsed = time.monotonic() - started
-            self.log(f"Отчёт: {report}" if report else "CSV-отчёт не сохранён.")
+            self.log(f"База каталога: {report}" if report else "Не удалось определить путь к базе SQLite.")
             self.log(f"Время обработки: {elapsed:.1f} сек.")
             if not failed:
                 self.send(("done", dict(self.stats), str(report) if report else "", self.stop_event.is_set()))
