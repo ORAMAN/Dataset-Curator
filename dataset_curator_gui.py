@@ -1311,6 +1311,8 @@ class DatasetCuratorApp(tk.Tk):
         base_text = str(base)
         for group in groups:
             self.review_load_generation[group] = request_id
+            self.review_render_generation[group] += 1  # отменяем отложенное построение старого списка
+            self.review_rendering[group] = False
             self.review_loading[group] = True
             self.review_dirty[group] = True
             if not self.review_list_frames[group].winfo_children():
@@ -2683,7 +2685,7 @@ class DatasetCuratorApp(tk.Tk):
                 )
                 self._log("ИТОГ\n" + summary.replace("\n", " | "))
                 messagebox.showinfo(APP_TITLE, summary)
-                self.after(250, lambda: self._refresh_all_review_tabs(sync_existing=False))
+                self.review_dirty["selected"] = True\n                self.review_dirty["rejected"] = True
             elif kind == "fatal":
                 _, message, details = event
                 self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
