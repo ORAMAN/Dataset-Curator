@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from dataset_catalog import CatalogStore, translate_en_ru_mymemory
+from dataset_catalog import CatalogStore
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -616,7 +616,7 @@ class DatasetProcessor:
                     record["description_ru"] = ""
                     if self.settings.translate_captions:
                         try:
-                            russian = translate_en_ru_mymemory(caption, self.settings.translation_email)
+                            russian = self.catalog.translate_en_ru(caption, self.settings.translation_email)
                             record["description_ru"] = russian
                             self.log(f"  → перевод RU: {russian}")
                         except Exception as translate_exc:
@@ -691,7 +691,7 @@ class DatasetProcessor:
             record.update(reason="", caption=caption, description_ru="")
             if self.settings.translate_captions:
                 try:
-                    record["description_ru"] = translate_en_ru_mymemory(caption, self.settings.translation_email)
+                    record["description_ru"] = self.catalog.translate_en_ru(caption, self.settings.translation_email)
                     self.log(f"  → перевод RU: {record['description_ru']}")
                 except Exception as translate_exc:
                     self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
@@ -1552,7 +1552,8 @@ class DatasetCuratorApp(tk.Tk):
 
         current_en = caption_widget.get("1.0", "end-1c").strip()
         current_ru = russian_widget.get("1.0", "end-1c").strip()
-        saved = CatalogStore(base).get_image(source) or {}
+        catalog = CatalogStore(base)
+        saved = catalog.get_image(source) or {}
         saved_en = str(saved.get("description_en") or "").strip()
         saved_ru = str(saved.get("description_ru") or "").strip()
         if (current_en != saved_en or current_ru != saved_ru) and (current_en or current_ru):
@@ -1618,7 +1619,7 @@ class DatasetCuratorApp(tk.Tk):
                         self.event_queue.put(("log", f"CLIP недоступен, оставлена подпись BLIP: {exc}"))
                 if settings.translate_captions:
                     try:
-                        caption_ru = translate_en_ru_mymemory(caption, settings.translation_email)
+                        caption_ru = catalog.translate_en_ru(caption, settings.translation_email)
                     except Exception as exc:
                         self.event_queue.put(("log", f"Перевод MyMemory не выполнен: {type(exc).__name__}: {exc}"))
             except Exception as exc:
