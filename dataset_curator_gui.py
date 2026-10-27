@@ -1913,8 +1913,10 @@ class DatasetCuratorApp(tk.Tk):
         self.review_caption_ru_drafts.pop(draft_key, None)
         self._log(f"Статус изменён в SQLite: {source} → {new_status}; файл не перемещался")
         self.v_status.set(f"Статус изменён: {source.name}")
-        self._refresh_review_tab(group, reset=True)
-        self._refresh_review_tab("rejected" if group == "selected" else "selected", reset=True)
+        target_group = "rejected" if group == "selected" else "selected"
+        self._remove_review_card_from_cache(group, source)
+        # Вторую вкладку обновим в фоне только при переходе на неё.
+        self.review_dirty[target_group] = True
 
 
     def _translate_review_caption(
@@ -2511,132 +2513,194 @@ class DatasetCuratorApp(tk.Tk):
             self.v_status.set("Запрошена остановка… текущий файл будет завершён")
             self.stop_button.configure(state="disabled")
 
-    def _poll_queue(self):
-        try:
-            while True:
-                event = self.event_queue.get_nowait()
-                kind = event[0]
-                if kind == "log":
-                    self._log(event[1])
-                elif kind == "review_translation_result":
-                    _, group, path_text, translated, error = event
-                    key = (group, path_text)
-                    self.review_workers.pop(key, None)
-                    card = self.review_card_widgets.get(key)
-                    if card:
-                        for widget_name in ("generate", "translate", "save", "move", "caption", "caption_ru"):
-                            card[widget_name].configure(state="normal")
-                    if error:
-                        self.v_status.set(f"Ошибка перевода: {Path(path_text).name}")
-                        self._log(f"Перевод EN → RU не выполнен для {path_text}: {error}")
-                        messagebox.showerror(APP_TITLE, f"Не удалось перевести описание:\n{path_text}\n\n{error}")
-                    else:
-                        self.review_caption_ru_drafts[path_text] = translated
-                        if card:
-                            card["caption_ru"].delete("1.0", "end")
-                            card["caption_ru"].insert("1.0", translated)
-                            card["caption_state"].configure(text="Перевод подготовлен — не сохранён")
-                        self.v_status.set(f"Перевод подготовлен: {Path(path_text).name}. Нажми «Сохранить оба описания».")
-                        self._log(f"Перевод подготовлен в редакторе: {path_text}")
-                elif kind == "review_caption_result":
-                    _, group, path_text, caption, caption_ru, error = event
-                    key = (group, path_text)
-                    self.review_workers.pop(key, None)
-                    card = self.review_card_widgets.get(key)
-                    if not error:
-                        # Сохраняем оба черновика в памяти, но не записываем их в файлы.
-                        self.review_caption_drafts[path_text] = caption
-                        self.review_caption_ru_drafts[path_text] = caption_ru
-                    if card:
-                        card["generate"].configure(state="normal")
-                        card["translate"].configure(state="normal")
-                        card["save"].configure(state="normal")
-                        card["move"].configure(state="normal")
-                        card["caption"].configure(state="normal")
-                        card["caption_ru"].configure(state="normal")
-                        if not error:
-                            card["caption"].delete("1.0", "end")
-                            card["caption"].insert("1.0", caption)
-                            card["caption_ru"].delete("1.0", "end")
-                            card["caption_ru"].insert("1.0", caption_ru)
-                            card["caption_state"].configure(text="Новые описания не сохранены")
-                    if error:
-                        self.v_status.set(f"Ошибка генерации: {Path(path_text).name}")
-                        self._log(f"Ошибка генерации описания для {path_text}: {error}")
-                        messagebox.showerror(APP_TITLE, f"Не удалось сгенерировать описание для:\n{path_text}\n\n{error}")
-                    else:
-                        self.v_status.set(f"Описания EN/RU подготовлены: {Path(path_text).name}. Нажми «Сохранить оба описания».")
-                        self._log(f"Описания подготовлены в редакторе: {path_text}")
-                elif kind == "progress":
-                    _, current, total, filename, stats = event
-                    self.progress.configure(maximum=max(total, 1), value=current)
-                    self.v_progress.set(f"Обработано: {current} / {total} · {filename}")
-                    self.v_summary.set(
-                        f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
-                        if self.settings_snapshot and self.settings_snapshot.caption_only
-                        else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
-                    )
-                    self.v_status.set("Обработка…")
-                elif kind == "done":
-                    _, stats, report_path, stopped = event
-                    self.last_stats = stats
-                    self.start_button.configure(state="normal")
-                    self.caption_only_button.configure(state="normal")
-                    self.export_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
-                    self.v_status.set("Остановлено пользователем" if stopped else "Готово")
-                    self.v_summary.set(
-                        f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
-                        if self.settings_snapshot and self.settings_snapshot.caption_only
-                        else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
-                    )
-                    summary = (
-                        f"Обработано: {stats['processed']}\n"
-                        f"selected: {stats['selected']}\n"
-                        f"Пограничные: {stats['maybe']}\n"
-                        f"Отклонено по эстетике: {stats['rejected']}\n"
-                        f"Малое разрешение: {stats['small_resolution']}\n"
-                        f"Нет подходящего лица: {stats['no_face']}\n"
-                        f"Несколько лиц: {stats['multiple_faces']}\n"
-                        f"Размытые: {stats['blurry']}\n"
-                        f"Ошибки: {stats['errors']}\n"
-                        f"Создано подписей: {stats['captions']}\n"
-                        f"Пропущено (подпись уже существует): {stats['captions_skipped']}\n"
-                        f"Кандидатов в дубликаты: {stats['duplicates']}\n\n"
-                        f"База SQLite: {report_path or 'путь не определён'}"
-                    )
-                    self._log("ИТОГ\n" + summary.replace("\n", " | "))
-                    messagebox.showinfo(APP_TITLE, summary)
-                    self.after(250, self._refresh_all_review_tabs)
-                elif kind == "fatal":
-                    _, message, details = event
-                    self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
-                    self._log(details)
-                    self.start_button.configure(state="normal")
-                    self.caption_only_button.configure(state="normal")
-                    self.export_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
-                    self.v_status.set("Ошибка запуска")
-                    messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
-                    self.after(250, self._refresh_all_review_tabs)
-        except queue.Empty:
-            pass
-        self.after(100, self._poll_queue)
+    def _apply_progress_event(self, event: tuple):
+        _, current, total, filename, stats = event
+        self.progress.configure(maximum=max(total, 1), value=current)
+        self.v_progress.set(f"Обработано: {current} / {total} · {filename}")
+        self.v_summary.set(
+            f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
+            if self.settings_snapshot and self.settings_snapshot.caption_only
+            else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
+        )
+        self.v_status.set("Обработка…")
 
-    def _log(self, line: str):
-        if not hasattr(self, "log_text"):
+    def _handle_export_result(self, event: tuple):
+        _, base_text, output_text, exported, skipped, error, empty, added = event
+        self.export_worker = None
+        self.export_button.configure(state="normal")
+        if added:
+            self._log(f"SQLite: добавлено записей об изображениях — {added}")
+        if error:
+            self.v_status.set("Ошибка экспорта")
+            self._log(f"ОШИБКА экспорта: {error}")
+            messagebox.showerror(APP_TITLE, f"Не удалось экспортировать набор:\n{error}")
+            return
+        if empty:
+            self.v_status.set("Экспорт: нет выбранных изображений")
+            messagebox.showinfo(APP_TITLE, "В SQLite пока нет выбранных изображений для экспорта.")
+            return
+        message = (
+            f"Экспорт завершён.\n\n"
+            f"Изображений и EN .txt экспортировано: {exported}\n"
+            f"Пропущено (файл отсутствует или нет английского описания): {skipped}\n"
+            f"Папка: {output_text}\n"
+        )
+        target = Path(output_text)
+        if (target / "captions_ru.csv").is_file():
+            message += "Переводы RU: captions_ru.csv"
+        self._log(message.replace("\n", " | "))
+        self.v_status.set(f"Экспорт завершён: {exported} изображений")
+        messagebox.showinfo(APP_TITLE, message)
+
+    def _poll_queue(self):
+        """Обрабатывает очередь порциями; прогресс объединяется, журнал записывается пачкой."""
+        batch = []
+        deadline = time.perf_counter() + 0.008
+        while len(batch) < 400 and time.perf_counter() < deadline:
+            try:
+                batch.append(self.event_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        pending_logs: list[str] = []
+        latest_progress = None
+
+        def flush_pending():
+            nonlocal latest_progress
+            if pending_logs:
+                self._append_log_lines(pending_logs)
+                pending_logs.clear()
+            if latest_progress is not None:
+                self._apply_progress_event(latest_progress)
+                latest_progress = None
+
+        for event in batch:
+            kind = event[0]
+            if kind == "log":
+                pending_logs.append(str(event[1]))
+                continue
+            if kind == "progress":
+                # Десятки промежуточных значений заменяются последним в текущей порции.
+                latest_progress = event
+                continue
+
+            # Сохраняем правильный порядок относительно конечных сообщений и диалогов.
+            flush_pending()
+            if kind == "review_catalog_result":
+                self._handle_review_catalog_result(event)
+            elif kind == "review_translation_result":
+                _, group, path_text, translated, error = event
+                key = (group, path_text)
+                self.review_workers.pop(key, None)
+                card = self.review_card_widgets.get(key)
+                if card:
+                    for widget_name in ("generate", "translate", "save", "move", "caption", "caption_ru"):
+                        widget = card.get(widget_name)
+                        if widget is not None:
+                            widget.configure(state="normal")
+                if error:
+                    self.v_status.set(f"Ошибка перевода: {Path(path_text).name}")
+                    self._log(f"Перевод EN → RU не выполнен для {path_text}: {error}")
+                    messagebox.showerror(APP_TITLE, f"Не удалось перевести описание:\n{path_text}\n\n{error}")
+                else:
+                    self.review_caption_ru_drafts[path_text] = translated
+                    if card:
+                        card["caption_ru"].delete("1.0", "end")
+                        card["caption_ru"].insert("1.0", translated)
+                        card["caption_state"].configure(text="Перевод подготовлен — не сохранён")
+                    self.v_status.set(f"Перевод подготовлен: {Path(path_text).name}. Нажми «Сохранить оба описания».")
+                    self._log(f"Перевод подготовлен в редакторе: {path_text}")
+            elif kind == "review_caption_result":
+                _, group, path_text, caption, caption_ru, error = event
+                key = (group, path_text)
+                self.review_workers.pop(key, None)
+                card = self.review_card_widgets.get(key)
+                if not error:
+                    self.review_caption_drafts[path_text] = caption
+                    self.review_caption_ru_drafts[path_text] = caption_ru
+                if card:
+                    for widget_name in ("generate", "translate", "save", "move", "caption", "caption_ru"):
+                        widget = card.get(widget_name)
+                        if widget is not None:
+                            widget.configure(state="normal")
+                    if not error:
+                        card["caption"].delete("1.0", "end")
+                        card["caption"].insert("1.0", caption)
+                        card["caption_ru"].delete("1.0", "end")
+                        card["caption_ru"].insert("1.0", caption_ru)
+                        card["caption_state"].configure(text="Новые описания не сохранены")
+                if error:
+                    self.v_status.set(f"Ошибка генерации: {Path(path_text).name}")
+                    self._log(f"Ошибка генерации описания для {path_text}: {error}")
+                    messagebox.showerror(APP_TITLE, f"Не удалось сгенерировать описание для:\n{path_text}\n\n{error}")
+                else:
+                    self.v_status.set(f"Описания EN/RU подготовлены: {Path(path_text).name}. Нажми «Сохранить оба описания».")
+                    self._log(f"Описания подготовлены в редакторе: {path_text}")
+            elif kind == "export_result":
+                self._handle_export_result(event)
+            elif kind == "done":
+                _, stats, report_path, stopped = event
+                self.last_stats = stats
+                self.start_button.configure(state="normal")
+                self.caption_only_button.configure(state="normal")
+                self.export_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+                self.v_status.set("Остановлено пользователем" if stopped else "Готово")
+                self.v_summary.set(
+                    f"Подписей: {stats['captions']} · пропущено: {stats['captions_skipped']} · ошибки: {stats['errors']}"
+                    if self.settings_snapshot and self.settings_snapshot.caption_only
+                    else f"selected {stats['selected']} · пограничные {stats['maybe']} · отклонено {stats['rejected']} · ошибки {stats['errors']}"
+                )
+                summary = (
+                    f"Обработано: {stats['processed']}\n"
+                    f"selected: {stats['selected']}\n"
+                    f"Пограничные: {stats['maybe']}\n"
+                    f"Отклонено по эстетике: {stats['rejected']}\n"
+                    f"Малое разрешение: {stats['small_resolution']}\n"
+                    f"Нет подходящего лица: {stats['no_face']}\n"
+                    f"Несколько лиц: {stats['multiple_faces']}\n"
+                    f"Размытые: {stats['blurry']}\n"
+                    f"Ошибки: {stats['errors']}\n"
+                    f"Создано подписей: {stats['captions']}\n"
+                    f"Пропущено (подпись уже существует): {stats['captions_skipped']}\n"
+                    f"Кандидатов в дубликаты: {stats['duplicates']}\n\n"
+                    f"База SQLite: {report_path or 'путь не определён'}"
+                )
+                self._log("ИТОГ\n" + summary.replace("\n", " | "))
+                messagebox.showinfo(APP_TITLE, summary)
+                self.after(250, lambda: self._refresh_all_review_tabs(sync_existing=False))
+            elif kind == "fatal":
+                _, message, details = event
+                self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
+                self._log(details)
+                self.start_button.configure(state="normal")
+                self.caption_only_button.configure(state="normal")
+                self.export_button.configure(state="normal")
+                self.stop_button.configure(state="disabled")
+                self.v_status.set("Ошибка запуска")
+                messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
+                self.after(250, lambda: self._refresh_all_review_tabs(sync_existing=False))
+
+        flush_pending()
+        # Частый короткий опрос не даёт очереди логов блокировать поток Tkinter.
+        self.after(50, self._poll_queue)
+
+    def _append_log_lines(self, lines: list[str]):
+        if not hasattr(self, "log_text") or not lines:
             return
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", line + "\n")
-        # Журнал ограничен по размеру, чтобы Tk Text не разрастался на длинном прогоне.
+        self.log_text.insert("end", "\n".join(lines) + "\n")
         try:
-            lines = int(self.log_text.index("end-1c").split(".")[0])
-            if lines > 7000:
-                self.log_text.delete("1.0", f"{lines - 6000}.0")
-        except Exception:
+            count = int(self.log_text.index("end-1c").split(".")[0])
+            if count > 7000:
+                self.log_text.delete("1.0", f"{count - 6000}.0")
+        except (tk.TclError, ValueError):
             pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _log(self, line: str):
+        self._append_log_lines([line])
 
     def _on_close(self):
         if self.worker and self.worker.is_alive():
