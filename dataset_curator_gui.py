@@ -98,28 +98,6 @@ def get_blur_variance(image_rgb) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
-def safe_copy(src: Path, destination_dir: Path, output_name: str | None = None) -> Path:
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    target = destination_dir / (output_name or src.name)
-    # Если целевой файл есть, обновляем его: это делает повторный запуск идемпотентным.
-    shutil.copy2(src, target)
-    return target
-
-
-def safe_move(src: Path, destination_dir: Path) -> Path:
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    target = destination_dir / src.name
-    if target.exists():
-        stem, suffix = src.stem, src.suffix
-        counter = 2
-        while True:
-            candidate = destination_dir / f"{stem}_{counter}{suffix}"
-            if not candidate.exists():
-                target = candidate
-                break
-            counter += 1
-    shutil.move(str(src), str(target))
-    return target
 
 
 @dataclass
