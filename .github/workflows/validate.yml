@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Compile application
-        run: python -m py_compile dataset_curator_gui.py
+      - name: Compile application and catalog
+        run: python -m py_compile dataset_curator_gui.py dataset_catalog.py
 
       - name: Verify review and caption-only features
         run: |
@@ -43,6 +43,7 @@ jobs:
           required_app = {
               "_build_review_tab", "_build_review_card", "_refresh_review_tab",
               "_save_review_caption", "_move_review_image", "_generate_review_caption",
+              "_export_catalog",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -50,5 +51,56 @@ jobs:
           assert 'text="Выбранные"' in source
           assert 'text="Отбракованные"' in source
           assert 'text="📝 Только подписи"' in source
-          print("Syntax and required review/caption-only methods: OK")
+          assert "translate_en_ru_mymemory" in source
+          assert "catalog.set_descriptions(source, description_en, description_ru)" in source
+          print("Syntax and required GUI/SQLite methods: OK")
+          PY
+
+      - name: Test SQLite catalog and explicit export
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          from dataset_catalog import CatalogStore
+
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp) / "source"
+              root.mkdir()
+              photo = root / "portrait.jpg"
+              photo.write_bytes(b"test image data; source file is intentionally opaque")
+              catalog = CatalogStore(root)
+              imported = catalog.sync_existing_files()
+              assert imported == 1, imported
+              row = catalog.get_image(photo)
+              assert row and row["status"] == "pending", row
+
+              catalog.upsert_analysis({
+                  "status": "selected",
+                  "reason": "",
+                  "width": 1024,
+                  "height": 1536,
+                  "aesthetic_score": 5.6,
+                  "caption": "woman portrait, natural light",
+                  "description_ru": "Портрет женщины при естественном освещении",
+              }, photo)
+              catalog.set_descriptions(
+                  photo,
+                  "woman portrait, natural light",
+                  "Портрет женщины при естественном освещении",
+              )
+              assert len(catalog.list_images("selected")) == 1
+              assert not photo.with_suffix(".txt").exists(), "Processing must not create captions next to source photos"
+
+              catalog.set_status(photo, "rejected", "manual review")
+              assert catalog.list_images("selected") == []
+              assert len(catalog.list_images("rejected")) == 1
+              catalog.set_status(photo, "selected", "")
+              exported, skipped, output = catalog.export_selected(Path(tmp) / "export")
+              assert (exported, skipped) == (1, 0), (exported, skipped)
+              assert (output / "portrait.jpg").is_file()
+              assert (output / "portrait.txt").read_text(encoding="utf-8").strip() == "woman portrait, natural light"
+              assert (output / "captions_ru.csv").is_file()
+              assert photo.read_bytes() == b"test image data; source file is intentionally opaque"
+              assert not photo.with_suffix(".txt").exists()
+          print("SQLite catalog, status changes, bilingual storage and explicit export: OK")
           PY
