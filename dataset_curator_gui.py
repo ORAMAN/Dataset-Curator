@@ -1327,20 +1327,26 @@ class DatasetCuratorApp(tk.Tk):
         caption_header = ttk.Frame(content)
         caption_header.pack(fill="x")
         ttk.Label(caption_header, text="Подпись (.txt)", style="Muted.TLabel").pack(side="left")
-        if caption_path.is_file():
-            ttk.Label(caption_header, text="Есть подпись", style="Muted.TLabel").pack(side="right")
-        else:
-            ttk.Label(caption_header, text="Подпись отсутствует", style="Muted.TLabel").pack(side="right")
+        caption_state = ttk.Label(
+            caption_header,
+            text="Есть подпись" if caption_path.is_file() else "Подпись отсутствует",
+            style="Muted.TLabel",
+        )
+        caption_state.pack(side="right")
 
         caption_text = tk.Text(content, height=4, wrap="word", undo=True, font=("Segoe UI", 9))
         caption_text.pack(fill="x", expand=True, pady=(3, 6))
         if caption_value:
             caption_text.insert("1.0", caption_value.rstrip("\r\n"))
-        caption_text.bind(
-            "<KeyRelease>",
-            lambda _event, p=str(source), t=caption_text: self.review_caption_drafts.__setitem__(p, t.get("1.0", "end-1c")),
-            add="+",
-        )
+        def remember_caption_draft(_event=None, p=str(source), t=caption_text):
+            # after_idle учитывает вставку/вырезание, выполненные стандартными биндингами Tk.
+            try:
+                self.after_idle(lambda: self.review_caption_drafts.__setitem__(p, t.get("1.0", "end-1c")))
+            except tk.TclError:
+                pass
+
+        for sequence in ("<KeyRelease>", "<<Paste>>", "<<Cut>>", "<<Undo>>", "<<Redo>>"):
+            caption_text.bind(sequence, remember_caption_draft, add="+")
 
         buttons = ttk.Frame(content)
         buttons.pack(fill="x")
@@ -1376,6 +1382,7 @@ class DatasetCuratorApp(tk.Tk):
             "generate": generate_button,
             "save": save_button,
             "move": move_button,
+            "caption_state": caption_state,
             "group": group,
             "path": source,
         }
@@ -1403,6 +1410,12 @@ class DatasetCuratorApp(tk.Tk):
                 pass
         return sidecar
 
+    def _review_group_for_path(self, source: Path) -> str:
+        for group, _path in self.review_card_widgets:
+            if _path == str(source):
+                return group
+        return "selected"
+
     def _save_review_caption(self, source: Path, caption_widget: tk.Text, show_message: bool = True) -> bool:
         if self._review_is_busy():
             return False
@@ -1415,6 +1428,9 @@ class DatasetCuratorApp(tk.Tk):
                 try:
                     sidecar.unlink()
                     self.review_caption_drafts.pop(str(source), None)
+                    card = self.review_card_widgets.get((self._review_group_for_path(source), str(source)))
+                    if card:
+                        card["caption_state"].configure(text="Подпись отсутствует")
                     if show_message:
                         self.v_status.set(f"Подпись удалена: {sidecar.name}")
                     return True
@@ -1427,6 +1443,9 @@ class DatasetCuratorApp(tk.Tk):
         try:
             self._write_caption_for_image(source, value)
             self.review_caption_drafts.pop(str(source), None)
+            for card in self.review_card_widgets.values():
+                if str(card.get("path")) == str(source):
+                    card["caption_state"].configure(text="Есть подпись")
             self._log(f"Подпись сохранена: {sidecar}")
             if show_message:
                 self.v_status.set(f"Подпись сохранена: {sidecar.name}")
