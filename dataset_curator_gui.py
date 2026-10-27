@@ -986,7 +986,7 @@ class DatasetCuratorApp(tk.Tk):
         self.export_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(action_bar, text="■ Остановить", command=self._stop, state="disabled", style="Danger.TButton")
         self.stop_button.pack(side="left", padx=(8, 0))
-        ttk.Button(action_bar, text="Открыть базу SQLite", command=self._open_report).pack(side="left", padx=(8, 0))
+        ttk.Button(action_bar, text="Папка базы SQLite", command=self._open_report).pack(side="left", padx=(8, 0))
         ttk.Button(action_bar, text="Сохранить настройки", command=self._save_current_config).pack(side="right")
         ttk.Label(action_bar, text="Выбери папку, настрой фильтры и нажми СТАРТ", style="Muted.TLabel").pack(side="left", padx=(14, 0))
 
@@ -1683,11 +1683,75 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showerror(APP_TITLE, f"Не удалось открыть папку:\n{exc}")
 
     def _open_report(self):
-        report = Path(self.v["input_dir"].get().strip()) / "dataset_report.csv"
-        if report.is_file():
-            self._open_path(report)
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showinfo(APP_TITLE, "Сначала выберите существующую папку датасета.")
+            return
+        catalog = CatalogStore(base)
+        catalog.sync_existing_files()
+        self._open_path(base)
+        self.v_status.set(f"База SQLite: {catalog.db_path}")
+
+    def _export_catalog(self):
+        if self._review_is_busy():
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Сначала выберите существующую папку датасета.")
+            return
+        catalog = CatalogStore(base)
+        catalog.sync_existing_files()
+        chosen = filedialog.askdirectory(
+            title="Выберите отдельную папку для экспорта готового набора",
+            initialdir=str(base.parent),
+            mustexist=True,
+        )
+        if not chosen:
+            return
+        output = Path(chosen).expanduser().resolve()
+        try:
+            output.relative_to(base.resolve())
+        except ValueError:
+            pass
         else:
-            messagebox.showinfo(APP_TITLE, "CSV-отчёт появится после запуска обработки.")
+            messagebox.showerror(
+                APP_TITLE,
+                "Папка экспорта должна быть отдельной от исходного каталога и не располагаться внутри него.",
+            )
+            return
+        if output == base.resolve():
+            messagebox.showerror(APP_TITLE, "Нельзя экспортировать поверх исходного каталога.")
+            return
+        selected_count = len(catalog.list_images("selected"))
+        if selected_count == 0:
+            messagebox.showinfo(APP_TITLE, "В SQLite пока нет выбранных изображений для экспорта.")
+            return
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Экспортировать выбранные изображения из SQLite в папку:\\n{output}\\n\\n"
+            "Будут скопированы только записи со статусом «выбрано» и непустым английским описанием. "
+            "Для каждого фото создастся .txt с английским описанием; переводы будут добавлены в captions_ru.csv.\\n\\n"
+            "Исходные изображения и база данных останутся без изменений. Продолжить?",
+            icon="question",
+        ):
+            return
+        try:
+            exported, skipped, target = catalog.export_selected(output, include_russian_csv=True)
+            message = (
+                f"Экспорт завершён.\\n\\n"
+                f"Изображений и EN .txt экспортировано: {exported}\\n"
+                f"Пропущено (файл отсутствует или нет английского описания): {skipped}\\n"
+                f"Папка: {target}\\n"
+            )
+            if (target / "captions_ru.csv").is_file():
+                message += "Переводы RU: captions_ru.csv"
+            self._log(message.replace("\n", " | "))
+            self.v_status.set(f"Экспорт завершён: {exported} изображений")
+            messagebox.showinfo(APP_TITLE, message)
+        except Exception as exc:
+            self._log(f"ОШИБКА экспорта: {type(exc).__name__}: {exc}")
+            messagebox.showerror(APP_TITLE, f"Не удалось экспортировать набор:\n{type(exc).__name__}: {exc}")
+        self._refresh_all_review_tabs()
 
     def _clear_log(self):
         self.log_text.configure(state="normal")
