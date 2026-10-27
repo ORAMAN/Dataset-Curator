@@ -866,6 +866,7 @@ class DatasetCuratorApp(tk.Tk):
         self.last_stats: dict[str, int] = {}
         self.review_page_size = 60
         self.review_file_cache: dict[str, list[Path]] = {"selected": [], "rejected": []}
+        self.review_record_cache: dict[str, dict[str, dict[str, Any]]] = {"selected": {}, "rejected": {}}
         self.review_visible_count: dict[str, int] = {"selected": 0, "rejected": 0}
         self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
         self.review_caption_drafts: dict[str, str] = {}
@@ -926,6 +927,8 @@ class DatasetCuratorApp(tk.Tk):
             "generate_captions": tk.BooleanVar(value=merged.get("generate_captions", False)),
             "caption_only": tk.BooleanVar(value=merged.get("caption_only", False)),
             "skip_existing_captions": tk.BooleanVar(value=merged.get("skip_existing_captions", True)),
+            "translate_captions": tk.BooleanVar(value=merged.get("translate_captions", True)),
+            "translation_email": tk.StringVar(value=merged.get("translation_email", "")),
             "caption_model": tk.StringVar(value=merged.get("caption_model", "Salesforce/blip-image-captioning-base")),
             "caption_prefix": tk.StringVar(value=merged.get("caption_prefix", "")),
             "classify_clip": tk.BooleanVar(value=merged.get("classify_clip", False)),
@@ -958,7 +961,7 @@ class DatasetCuratorApp(tk.Tk):
         folder_entry = ttk.Entry(folder_frame, textvariable=self.v["input_dir"])
         folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Button(folder_frame, text="Обзор…", command=self._browse_folder).pack(side="left")
-        ttk.Button(folder_frame, text="Открыть selected", command=lambda: self._open_output("selected")).pack(side="left", padx=(8, 0))
+        ttk.Button(folder_frame, text="Обновить каталог", command=self._refresh_all_review_tabs).pack(side="left", padx=(8, 0))
 
         # Основные действия размещены над вкладками, чтобы кнопка запуска
         # не терялась внизу окна на экранах с небольшим разрешением.
@@ -978,9 +981,11 @@ class DatasetCuratorApp(tk.Tk):
             command=self._start_caption_only,
         )
         self.caption_only_button.pack(side="left", padx=(8, 0))
+        self.export_button = ttk.Button(action_bar, text="📦 Экспортировать набор", command=self._export_catalog)
+        self.export_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(action_bar, text="■ Остановить", command=self._stop, state="disabled", style="Danger.TButton")
         self.stop_button.pack(side="left", padx=(8, 0))
-        ttk.Button(action_bar, text="Открыть CSV-отчёт", command=self._open_report).pack(side="left", padx=(8, 0))
+        ttk.Button(action_bar, text="Открыть базу SQLite", command=self._open_report).pack(side="left", padx=(8, 0))
         ttk.Button(action_bar, text="Сохранить настройки", command=self._save_current_config).pack(side="right")
         ttk.Label(action_bar, text="Выбери папку, настрой фильтры и нажми СТАРТ", style="Muted.TLabel").pack(side="left", padx=(14, 0))
 
@@ -1092,9 +1097,21 @@ class DatasetCuratorApp(tk.Tk):
         ttk.Entry(captions, textvariable=self.v["caption_prefix"]).grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
         ttk.Label(
             captions,
-            text="В режиме «ТОЛЬКО ПОДПИСИ» файлы .txt создаются рядом с исходными изображениями. Уже существующие подписи сохраняются по умолчанию. Модель Salesforce/blip-image-captioning-base загружается с Hugging Face при первом запуске; подписи обычно на английском.",
+            text="Все описания хранятся в SQLite. Файлы .txt создаются только при явном экспорте выбранного набора. BLIP обычно пишет подписи на английском.",
             style="Muted.TLabel", wraplength=850,
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            captions,
+            text="Автоматически переводить английское описание на русский (MyMemory)",
+            variable=self.v["translate_captions"],
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        ttk.Label(captions, text="Email для бесплатного лимита MyMemory (необязательно):").grid(row=7, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(captions, textvariable=self.v["translation_email"]).grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=(5, 0))
+        ttk.Label(
+            captions,
+            text="MyMemory: бесплатный лимит около 5 000 символов/день без email или 50 000 с действительным email. Текст отправляется внешнему сервису для перевода.",
+            style="Muted.TLabel", wraplength=850,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(5, 0))
         captions.columnconfigure(1, weight=1)
 
         clip = ttk.LabelFrame(tab, text="CLIP: классификация по заданным текстовым категориям", padding=10)
@@ -1717,6 +1734,8 @@ class DatasetCuratorApp(tk.Tk):
             generate_captions=self.v["generate_captions"].get() or caption_only,
             caption_only=caption_only,
             skip_existing_captions=self.v["skip_existing_captions"].get(),
+            translate_captions=self.v["translate_captions"].get(),
+            translation_email=self.v["translation_email"].get().strip(),
             caption_model=self.v["caption_model"].get().strip() or "Salesforce/blip-image-captioning-base",
             caption_prefix=self.v["caption_prefix"].get().strip(),
             classify_clip=self.v["classify_clip"].get(), clip_model=self.v["clip_model"].get().strip() or "openai/clip-vit-base-patch32",
