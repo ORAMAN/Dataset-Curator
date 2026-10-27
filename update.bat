@@ -142,7 +142,7 @@ if errorlevel 1 (
     goto :error
 )
 
-robocopy "%TMP_DIR%\Dataset-Curator-main" "%PROJECT_ROOT%" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XD ".git" ".venv" "venv" "env" "__pycache__" ".idea" ".vscode" "models" ".cache" "selected" "rejected" "bed_size" "blure" "no_or_small_faces" "moree_faces" "duplicate" /XF "dataset_curator_settings.json" "hf_token.txt" "dataset_report.csv" "blaze_face_short_range.tflite" "*.log" "*.tmp"
+robocopy "%TMP_DIR%\Dataset-Curator-main" "%PROJECT_ROOT%" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XD ".git" ".venv" "venv" "env" "__pycache__" ".idea" ".vscode" "models" ".cache" "selected" "rejected" "bed_size" "blure" "no_or_small_faces" "moree_faces" "duplicate" /XF "dataset_curator_settings.json" "hf_token.txt" "dataset_report.csv" "caption_report.csv" "dataset_curator.sqlite3" "*.db" "*.db-wal" "*.db-shm" "*.sqlite" "*.sqlite3" "*.sqlite-wal" "*.sqlite-shm" "*.sqlite3-wal" "*.sqlite3-shm" "blaze_face_short_range.tflite" "*.log" "*.tmp"
 set "ROBOCOPY_RC=!ERRORLEVEL!"
 call :cleanup_temp
 if !ROBOCOPY_RC! GEQ 8 (
@@ -195,7 +195,7 @@ if errorlevel 1 (
     call :cleanup_temp
     goto :error
 )
-robocopy "%TMP_DIR%\Dataset-Curator-main" "!TARGET_DIR!" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XD ".git" ".venv" "venv" "env" "__pycache__" ".idea" ".vscode" "models" ".cache" "selected" "rejected" "bed_size" "blure" "no_or_small_faces" "moree_faces" "duplicate" /XF "dataset_curator_settings.json" "hf_token.txt" "dataset_report.csv" "blaze_face_short_range.tflite" "*.log" "*.tmp"
+robocopy "%TMP_DIR%\Dataset-Curator-main" "!TARGET_DIR!" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XD ".git" ".venv" "venv" "env" "__pycache__" ".idea" ".vscode" "models" ".cache" "selected" "rejected" "bed_size" "blure" "no_or_small_faces" "moree_faces" "duplicate" /XF "dataset_curator_settings.json" "hf_token.txt" "dataset_report.csv" "caption_report.csv" "dataset_curator.sqlite3" "*.db" "*.db-wal" "*.db-shm" "*.sqlite" "*.sqlite3" "*.sqlite-wal" "*.sqlite-shm" "*.sqlite3-wal" "*.sqlite3-shm" "blaze_face_short_range.tflite" "*.log" "*.tmp"
 set "ROBOCOPY_RC=!ERRORLEVEL!"
 call :cleanup_temp
 if !ROBOCOPY_RC! GEQ 8 (
