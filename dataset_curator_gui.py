@@ -749,6 +749,11 @@ class DatasetProcessor:
                 try:
                     self.services.load_caption_model()
                 except Exception as exc:
+                    if self.settings.caption_only:
+                        raise RuntimeError(
+                            f"Режим «Только подписи» не может продолжиться без модели BLIP: "
+                            f"{type(exc).__name__}: {exc}"
+                        ) from exc
                     self.settings.generate_captions = False
                     self.log(f"Предупреждение: BLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без генерации подписей.")
 
@@ -1038,7 +1043,7 @@ class DatasetCuratorApp(tk.Tk):
         # В отдельном режиме подпись обязательна; остальные фильтры во время задания игнорируются.
         if self.v["caption_only"].get():
             self.v["generate_captions"].set(True)
-        self._save_config_debounced()
+        self._schedule_save_config()
 
     def _build_models_tab(self):
         tab = self.tab_models
@@ -1390,6 +1395,15 @@ class DatasetCuratorApp(tk.Tk):
                     f'"{sys.executable}" -m pip install '
                     '"transformers>=4.45,<5.0" "accelerate>=0.30"'
                 )
+                if settings.caption_only:
+                    messagebox.showerror(
+                        APP_TITLE,
+                        "Для режима «ТОЛЬКО ПОДПИСИ» необходим пакет transformers, иначе BLIP не сможет создать описания.\n\n"
+                        "Установите зависимость в том же Python, которым запускается приложение:\n"
+                        + install_command
+                        + "\n\nЛибо запустите install_optional_ai.bat и повторите операцию."
+                    )
+                    return
                 message = (
                     "Не найден пакет Python «transformers», необходимый для включённых функций:\n\n"
                     + "\n".join(f"• {feature}" for feature in ai_features)
