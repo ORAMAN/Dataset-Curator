@@ -44,6 +44,10 @@ jobs:
               "_build_review_tab", "_build_review_card", "_refresh_review_tab",
               "_save_review_caption", "_move_review_image", "_generate_review_caption",
               "_translate_review_caption", "_export_catalog", "_show_review_image",
+              "_launch_review_catalog_load", "_handle_review_catalog_result",
+              "_render_review_batch", "_remove_review_card_from_cache",
+              "_append_log_lines", "_handle_export_result",
+              "_mark_review_tabs_dirty_and_refresh_active",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -57,7 +61,16 @@ jobs:
           assert '"<Button-1>"' in source and "self._show_review_image(p)" in source
           assert '"Уместить"' in source and '"100%"' in source
           assert "zoom_with_wheel" in source, "Image viewer must support Ctrl+mouse-wheel zoom"
-          print("Syntax, review image dimensions/zoom and required GUI/SQLite methods: OK")
+          assert "time.perf_counter() + 0.008" in source, "Queue polling must be time-bounded"
+          assert "created < 4" in source, "Review cards must be created in small batches"
+          assert 'name="DatasetCuratorReviewLoad-' in source
+          assert 'name="DatasetCuratorExport"' in source, "Export must run outside the Tkinter event loop"
+          poll_method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == "_poll_queue")
+          assert not any(
+              isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True
+              for node in ast.walk(poll_method)
+          ), "Queue polling must not drain an unbounded queue in one UI tick"
+          print("Syntax, asynchronous catalog loading, batched UI updates and required GUI/SQLite methods: OK")
           PY
 
       - name: Test SQLite catalog and explicit export
