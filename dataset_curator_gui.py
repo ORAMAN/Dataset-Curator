@@ -959,6 +959,12 @@ class DatasetCuratorApp(tk.Tk):
             style="Accent.TButton",
         )
         self.start_button.pack(side="left")
+        self.caption_only_button = ttk.Button(
+            action_bar,
+            text="📝 Только подписи",
+            command=self._start_caption_only,
+        )
+        self.caption_only_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(action_bar, text="■ Остановить", command=self._stop, state="disabled", style="Danger.TButton")
         self.stop_button.pack(side="left", padx=(8, 0))
         ttk.Button(action_bar, text="Открыть CSV-отчёт", command=self._open_report).pack(side="left", padx=(8, 0))
@@ -1358,7 +1364,11 @@ class DatasetCuratorApp(tk.Tk):
     def _toggle_theme(self):
         self._apply_theme("light" if self.theme_name == "dark" else "dark", persist=True)
 
-    def _start(self):
+    def _start_caption_only(self):
+        """Запускает отдельный режим подписей одним нажатием, не меняя сохранённый режим фильтрации."""
+        self._start(caption_only_override=True)
+
+    def _start(self, caption_only_override: bool = False):
         if self.worker and self.worker.is_alive():
             return
         try:
@@ -1366,6 +1376,9 @@ class DatasetCuratorApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
+        if caption_only_override:
+            settings.caption_only = True
+            settings.generate_captions = True
         if settings.clean_outputs and not settings.caption_only and not messagebox.askyesno(
             APP_TITLE,
             "Будут удалены только выходные папки этого приложения: selected, rejected, bed_size, blure, "
@@ -1431,6 +1444,7 @@ class DatasetCuratorApp(tk.Tk):
         self.v_progress.set("Обработано: 0 / …")
         self.v_status.set("Подготовка моделей…")
         self.start_button.configure(state="disabled")
+        self.caption_only_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.notebook.select(self.tab_log)
         self._log("=" * 68)
@@ -1471,6 +1485,7 @@ class DatasetCuratorApp(tk.Tk):
                     _, stats, report_path, stopped = event
                     self.last_stats = stats
                     self.start_button.configure(state="normal")
+                    self.caption_only_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Остановлено пользователем" if stopped else "Готово")
                     self.v_summary.set(
@@ -1500,6 +1515,7 @@ class DatasetCuratorApp(tk.Tk):
                     self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
                     self._log(details)
                     self.start_button.configure(state="normal")
+                    self.caption_only_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.v_status.set("Ошибка запуска")
                     messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
