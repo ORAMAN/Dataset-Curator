@@ -862,6 +862,12 @@ class DatasetCuratorApp(tk.Tk):
         self.worker: threading.Thread | None = None
         self.settings_snapshot: Settings | None = None
         self.last_stats: dict[str, int] = {}
+        self.review_page_size = 60
+        self.review_file_cache: dict[str, list[Path]] = {"selected": [], "rejected": []}
+        self.review_visible_count: dict[str, int] = {"selected": 0, "rejected": 0}
+        self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
+        self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
+        self.review_workers: dict[tuple[str, str], threading.Thread] = {}
         self._make_vars()
         self._build_ui()
         self._apply_theme(self.theme_name, persist=False)
@@ -975,13 +981,20 @@ class DatasetCuratorApp(tk.Tk):
         self.notebook.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         self.tab_filters = ttk.Frame(self.notebook, padding=12)
         self.tab_models = ttk.Frame(self.notebook, padding=12)
+        self.tab_selected = ttk.Frame(self.notebook, padding=8)
+        self.tab_rejected = ttk.Frame(self.notebook, padding=8)
         self.tab_log = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(self.tab_filters, text="Фильтры")
         self.notebook.add(self.tab_models, text="AI-модели")
+        self.notebook.add(self.tab_selected, text="Выбранные")
+        self.notebook.add(self.tab_rejected, text="Отбракованные")
         self.notebook.add(self.tab_log, text="Журнал и отчёт")
         self._build_filters_tab()
         self._build_models_tab()
+        self._build_review_tab(self.tab_selected, "selected")
+        self._build_review_tab(self.tab_rejected, "rejected")
         self._build_log_tab()
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_review_tab_changed, add="+")
 
         footer = ttk.Frame(self, padding=(12, 0, 12, 12))
         footer.pack(fill="x")
