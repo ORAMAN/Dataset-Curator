@@ -19,6 +19,7 @@ import shutil
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -870,6 +871,10 @@ class DatasetCuratorApp(tk.Tk):
         self.review_catalog_request_id = 0
         self.review_load_workers: dict[int, threading.Thread] = {}
         self.export_worker: threading.Thread | None = None
+        self.review_thumb_request_id = 0
+        self.review_thumbnail_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="DatasetCuratorThumb"
+        )
         self._make_vars()
         self._build_ui()
         self._apply_theme(self.theme_name, persist=False)
@@ -1574,30 +1579,13 @@ class DatasetCuratorApp(tk.Tk):
         )
         size_label.pack(side="bottom", fill="x", pady=(4, 0))
 
-        try:
-            from PIL import Image, ImageOps, ImageTk
-            with Image.open(source) as raw:
-                image = ImageOps.exif_transpose(raw).convert("RGB")
-                image_width, image_height = image.size
-                preview_size_var.set(
-                    f"{image_width:,} × {image_height:,} px".replace(",", " ")
-                )
-                image.thumbnail((144, 144))
-                thumbnail = ImageTk.PhotoImage(image.copy())
-            self.review_photo_refs[group].append(thumbnail)
-            image_label = ttk.Label(preview_frame, image=thumbnail, anchor="center", cursor="hand2")
-            image_label.image = thumbnail
-            image_label.pack(fill="both", expand=True)
-            image_label.bind(
-                "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
-            )
-            image_label.bind(
-                "<Enter>", lambda _event, widget=image_label: widget.configure(cursor="hand2"), add="+"
-            )
-        except Exception as exc:
-            ttk.Label(
-                preview_frame, text=f"Не удалось\nзагрузить фото\n{exc}", wraplength=145
-            ).pack(fill="both", expand=True)
+        image_label = ttk.Label(
+            preview_frame, text="Загрузка миниатюры…", anchor="center", cursor="hand2"
+        )
+        image_label.pack(fill="both", expand=True)
+        image_label.bind(
+            "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
+        )
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
@@ -1683,8 +1671,74 @@ class DatasetCuratorApp(tk.Tk):
             "group": group,
             "path": source,
             "frame": card,
-            "photo": thumbnail,
+            "photo": None,
+            "preview_label": image_label,
+            "preview_size_var": preview_size_var,
+            "thumb_request_id": None,
         }
+        self.review_thumb_request_id += 1
+        thumb_request_id = self.review_thumb_request_id
+        self.review_card_widgets[(group, str(source))]["thumb_request_id"] = thumb_request_id
+        future = self.review_thumbnail_executor.submit(self._make_review_thumbnail, str(source))
+        future.add_done_callback(
+            lambda completed, g=group, p=str(source), rid=thumb_request_id:
+                self._queue_review_thumbnail_result(g, p, rid, completed)
+        )
+
+    @staticmethod
+    def _make_review_thumbnail(source_text: str):
+        """Декодирует/уменьшает исходное изображение вне потока Tkinter."""
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(source_text) as raw:
+                width, height = raw.size
+                try:
+                    orientation = raw.getexif().get(274, 1)
+                except Exception:
+                    orientation = 1
+                if orientation in (5, 6, 7, 8):
+                    width, height = height, width
+                resampling = getattr(Image, "Resampling", Image).LANCZOS
+                # thumbnail() позволяет Pillow использовать draft() для крупных JPEG.
+                raw.thumbnail((144, 144), resampling)
+                image = ImageOps.exif_transpose(raw).convert("RGB")
+                return image.copy(), (width, height), ""
+        except Exception as exc:
+            return None, None, f"{type(exc).__name__}: {exc}"
+
+    def _queue_review_thumbnail_result(self, group: str, path_text: str, request_id: int, future):
+        try:
+            preview, dimensions, error = future.result()
+        except Exception as exc:
+            preview, dimensions, error = None, None, f"{type(exc).__name__}: {exc}"
+        self.event_queue.put((
+            "review_thumbnail_result", group, path_text, request_id, preview, dimensions, error,
+        ))
+
+    def _handle_review_thumbnail_result(self, event: tuple):
+        _, group, path_text, request_id, preview, dimensions, error = event
+        card = self.review_card_widgets.get((group, path_text))
+        if not card or card.get("thumb_request_id") != request_id:
+            return
+        label = card.get("preview_label")
+        if label is None:
+            return
+        if error or preview is None:
+            label.configure(text=f"Не удалось загрузить фото\n{error}", image="")
+            return
+        try:
+            from PIL import ImageTk
+            photo = ImageTk.PhotoImage(preview, master=self)
+            label.configure(image=photo, text="")
+            label.image = photo
+            card["photo"] = photo
+            self.review_photo_refs[group].append(photo)
+            size_var = card.get("preview_size_var")
+            if size_var is not None and dimensions:
+                width, height = dimensions
+                size_var.set(f"{width:,} × {height:,} px".replace(",", " "))
+        except (tk.TclError, RuntimeError) as exc:
+            self._log(f"Не удалось показать миниатюру {path_text}: {exc}")
 
     def _show_review_image(self, source: Path):
         """Показывает исходное изображение в отдельном окне с масштабированием."""
@@ -2621,6 +2675,8 @@ class DatasetCuratorApp(tk.Tk):
             flush_pending()
             if kind == "review_catalog_result":
                 self._handle_review_catalog_result(event)
+            elif kind == "review_thumbnail_result":
+                self._handle_review_thumbnail_result(event)
             elif kind == "review_translation_result":
                 _, group, path_text, translated, error = event
                 key = (group, path_text)
@@ -2750,6 +2806,10 @@ class DatasetCuratorApp(tk.Tk):
             except tk.TclError:
                 pass
             self._config_save_after_id = None
+        try:
+            self.review_thumbnail_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         self._save_config_now()
         self.destroy()
 
