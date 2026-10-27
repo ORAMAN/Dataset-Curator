@@ -43,7 +43,7 @@ jobs:
           required_app = {
               "_build_review_tab", "_build_review_card", "_refresh_review_tab",
               "_save_review_caption", "_move_review_image", "_generate_review_caption",
-              "_translate_review_caption", "_export_catalog",
+              "_translate_review_caption", "_export_catalog", "_show_review_image",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -53,7 +53,11 @@ jobs:
           assert 'text="📝 Только подписи"' in source
           assert "translate_en_ru(" in source
           assert "catalog.set_descriptions(source, description_en, description_ru)" in source
-          print("Syntax and required GUI/SQLite methods: OK")
+          assert "preview_size_var.set(" in source, "Review cards must show image dimensions"
+          assert '"<Button-1>"' in source and "self._show_review_image(p)" in source
+          assert '"Уместить"' in source and '"100%"' in source
+          assert "zoom_with_wheel" in source, "Image viewer must support Ctrl+mouse-wheel zoom"
+          print("Syntax, review image dimensions/zoom and required GUI/SQLite methods: OK")
           PY
 
       - name: Test SQLite catalog and explicit export
