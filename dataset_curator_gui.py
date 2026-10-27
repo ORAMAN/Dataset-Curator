@@ -1486,6 +1486,24 @@ class DatasetCuratorApp(tk.Tk):
             self._refresh_review_tab(group)
             return
 
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        # Защита от перемещения карточки, оставшейся на экране после смены исходной папки.
+        try:
+            if source.parent.parent.resolve() != base.resolve():
+                messagebox.showwarning(
+                    APP_TITLE,
+                    "Карточка относится к другой исходной папке. Обновите список изображений и повторите действие.",
+                )
+                self._refresh_all_review_tabs()
+                return
+        except (OSError, RuntimeError):
+            messagebox.showwarning(APP_TITLE, "Не удалось проверить исходную папку карточки. Список будет обновлён.")
+            self._refresh_all_review_tabs()
+            return
+
         # Сохраняем видимую редакцию перед переносом. Пустое поле не стирает
         # автоматически уже существующую подпись — для удаления есть отдельная кнопка Save.
         caption_value = caption_widget.get("1.0", "end-1c").strip()
@@ -1496,10 +1514,6 @@ class DatasetCuratorApp(tk.Tk):
                 messagebox.showerror(APP_TITLE, f"Не удалось сохранить подпись перед перемещением:\n{exc}")
                 return
 
-        base = self._review_input_dir()
-        if base is None or not base.is_dir():
-            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
-            return
         target_group = "rejected" if group == "selected" else "selected"
         target_dir = base / target_group
         try:
