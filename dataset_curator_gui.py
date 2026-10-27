@@ -870,6 +870,7 @@ class DatasetCuratorApp(tk.Tk):
         self.review_visible_count: dict[str, int] = {"selected": 0, "rejected": 0}
         self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
         self.review_caption_drafts: dict[str, str] = {}
+        self.review_caption_ru_drafts: dict[str, str] = {}
         self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
         self.review_workers: dict[tuple[str, str], threading.Thread] = {}
         self.review_count_vars: dict[str, tk.StringVar] = {}
