@@ -1751,6 +1751,18 @@ class DatasetCuratorApp(tk.Tk):
         if output == base.resolve():
             messagebox.showerror(APP_TITLE, "Нельзя экспортировать поверх исходного каталога.")
             return
+        if output.is_dir():
+            try:
+                folder_has_files = next(output.iterdir(), None) is not None
+            except OSError as exc:
+                messagebox.showerror(APP_TITLE, f"Не удалось проверить папку экспорта:\n{exc}")
+                return
+            if folder_has_files:
+                messagebox.showerror(
+                    APP_TITLE,
+                    "Для безопасного экспорта выберите пустую отдельную папку. Существующие файлы не будут перезаписаны.",
+                )
+                return
         selected_count = len(catalog.list_images("selected"))
         if selected_count == 0:
             messagebox.showinfo(APP_TITLE, "В SQLite пока нет выбранных изображений для экспорта.")
