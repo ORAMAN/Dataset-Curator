@@ -1413,93 +1413,78 @@ class DatasetCuratorApp(tk.Tk):
             return True
         return False
 
-    def _write_caption_for_image(self, source: Path, value: str) -> Path:
-        sidecar = source.with_suffix(".txt")
-        temporary = sidecar.with_suffix(sidecar.suffix + ".tmp")
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            temporary.write_text(value.rstrip() + "\n", encoding="utf-8")
-            temporary.replace(sidecar)
-        finally:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
-        return sidecar
-
     def _review_group_for_path(self, source: Path) -> str:
-        for group, _path in self.review_card_widgets:
-            if _path == str(source):
+        for group, path_text in self.review_card_widgets:
+            if path_text == str(source):
                 return group
         return "selected"
 
-    def _save_review_caption(self, source: Path, caption_widget: tk.Text, show_message: bool = True) -> bool:
+    def _save_review_caption(
+        self,
+        source: Path,
+        caption_widget: tk.Text,
+        russian_widget: tk.Text,
+        show_message: bool = True,
+    ) -> bool:
+        """Сохраняет английское описание и русский перевод только в SQLite."""
         if self._review_is_busy():
             return False
-        value = caption_widget.get("1.0", "end-1c").strip()
-        sidecar = source.with_suffix(".txt")
-        if not value:
-            if sidecar.is_file():
-                if not messagebox.askyesno(APP_TITLE, f"Подпись пуста. Удалить существующий файл?\n{sidecar}", icon="warning"):
-                    return False
-                try:
-                    sidecar.unlink()
-                    self.review_caption_drafts.pop(str(source), None)
-                    card = self.review_card_widgets.get((self._review_group_for_path(source), str(source)))
-                    if card:
-                        card["caption_state"].configure(text="Подпись отсутствует")
-                    if show_message:
-                        self.v_status.set(f"Подпись удалена: {sidecar.name}")
-                    return True
-                except OSError as exc:
-                    messagebox.showerror(APP_TITLE, f"Не удалось удалить подпись:\n{exc}")
-                    return False
-            if show_message:
-                messagebox.showinfo(APP_TITLE, "Поле подписи пустое. Файл не создан.")
+        description_en = caption_widget.get("1.0", "end-1c").strip()
+        description_ru = russian_widget.get("1.0", "end-1c").strip()
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
             return False
         try:
-            self._write_caption_for_image(source, value)
+            source.resolve().relative_to(base.resolve())
+        except (OSError, RuntimeError, ValueError):
+            messagebox.showerror(APP_TITLE, "Изображение не относится к текущему каталогу. Обновите список.")
+            return False
+
+        catalog = CatalogStore(base)
+        previous = catalog.get_image(source) or {}
+        if not description_en and not description_ru and (
+            str(previous.get("description_en") or "").strip() or str(previous.get("description_ru") or "").strip()
+        ):
+            if not messagebox.askyesno(
+                APP_TITLE,
+                "Оба поля описания пусты. Очистить английское описание и перевод в SQLite?",
+                icon="warning",
+            ):
+                return False
+
+        try:
+            catalog.set_descriptions(source, description_en, description_ru)
             self.review_caption_drafts.pop(str(source), None)
-            for card in self.review_card_widgets.values():
-                if str(card.get("path")) == str(source):
-                    card["caption_state"].configure(text="Есть подпись")
-            self._log(f"Подпись сохранена: {sidecar}")
+            self.review_caption_ru_drafts.pop(str(source), None)
+            for key, card in self.review_card_widgets.items():
+                if key[1] == str(source):
+                    card["caption_state"].configure(text="Оба описания сохранены в SQLite")
+            for group in ("selected", "rejected"):
+                row = self.review_record_cache.get(group, {}).get(str(source))
+                if row is not None:
+                    row["description_en"] = description_en
+                    row["description_ru"] = description_ru
+            self._log(f"Описания EN/RU сохранены в SQLite: {source}")
             if show_message:
-                self.v_status.set(f"Подпись сохранена: {sidecar.name}")
+                self.v_status.set(f"Описания сохранены: {source.name}")
             return True
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось сохранить подпись:\n{exc}")
+            messagebox.showerror(APP_TITLE, f"Не удалось сохранить описания в SQLite:\n{type(exc).__name__}: {exc}")
             return False
 
-    def _safe_move_review_image(self, source: Path, target_dir: Path) -> Path:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        caption_source = source.with_suffix(".txt")
-        index = 1
-        while True:
-            suffix = "" if index == 1 else f"_{index}"
-            candidate = target_dir / f"{source.stem}{suffix}{source.suffix}"
-            candidate_caption = candidate.with_suffix(".txt")
-            if not candidate.exists() and not candidate_caption.exists():
-                break
-            index += 1
-
-        shutil.move(str(source), str(candidate))
-        try:
-            if caption_source.is_file():
-                shutil.move(str(caption_source), str(candidate_caption))
-        except Exception:
-            try:
-                shutil.move(str(candidate), str(source))
-            except Exception:
-                pass
-            raise
-        return candidate
-
-    def _move_review_image(self, source: Path, group: str, caption_widget: tk.Text):
+    def _move_review_image(
+        self,
+        source: Path,
+        group: str,
+        caption_widget: tk.Text,
+        russian_widget: tk.Text,
+    ):
+        """Меняет только status в SQLite; изображение и любые текстовые файлы не перемещаются."""
         if self._review_is_busy():
             return
         if not source.is_file():
-            messagebox.showwarning(APP_TITLE, f"Изображение уже перемещено или удалено:\n{source}")
+            messagebox.showwarning(APP_TITLE, f"Исходное изображение не найдено:\n{source}")
             self._refresh_review_tab(group)
             return
 
@@ -1507,43 +1492,42 @@ class DatasetCuratorApp(tk.Tk):
         if base is None or not base.is_dir():
             messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
             return
-        # Защита от перемещения карточки, оставшейся на экране после смены исходной папки.
         try:
-            if source.parent.parent.resolve() != base.resolve():
-                messagebox.showwarning(
-                    APP_TITLE,
-                    "Карточка относится к другой исходной папке. Обновите список изображений и повторите действие.",
-                )
-                self._refresh_all_review_tabs()
-                return
-        except (OSError, RuntimeError):
-            messagebox.showwarning(APP_TITLE, "Не удалось проверить исходную папку карточки. Список будет обновлён.")
+            source.resolve().relative_to(base.resolve())
+        except (OSError, RuntimeError, ValueError):
+            messagebox.showwarning(
+                APP_TITLE,
+                "Карточка относится к другой исходной папке. Обновите список и повторите действие.",
+            )
             self._refresh_all_review_tabs()
             return
 
-        # Сохраняем видимую редакцию перед переносом. Пустое поле не стирает
-        # автоматически уже существующую подпись — для удаления есть отдельная кнопка Save.
-        caption_value = caption_widget.get("1.0", "end-1c").strip()
-        if caption_value:
-            try:
-                self._write_caption_for_image(source, caption_value)
-            except Exception as exc:
-                messagebox.showerror(APP_TITLE, f"Не удалось сохранить подпись перед перемещением:\n{exc}")
+        # Сначала сохраняем текущие правки в БД. Файловая система не меняется.
+        description_en = caption_widget.get("1.0", "end-1c").strip()
+        description_ru = russian_widget.get("1.0", "end-1c").strip()
+        draft_key = str(source)
+        if description_en or description_ru:
+            if not self._save_review_caption(source, caption_widget, russian_widget, show_message=False):
                 return
 
-        target_group = "rejected" if group == "selected" else "selected"
-        target_dir = base / target_group
+        new_status = "rejected" if group == "selected" else "selected"
         try:
-            target = self._safe_move_review_image(source, target_dir)
+            CatalogStore(base).set_status(
+                source,
+                new_status,
+                reason="Статус изменён вручную в интерфейсе Dataset Curator",
+            )
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось переместить изображение:\n{exc}")
+            messagebox.showerror(APP_TITLE, f"Не удалось изменить статус в SQLite:\n{type(exc).__name__}: {exc}")
             return
 
-        self.review_caption_drafts.pop(str(source), None)
-        self._log(f"Изображение перемещено: {source} → {target}")
-        self.v_status.set(f"Перемещено: {target.name}")
+        self.review_caption_drafts.pop(draft_key, None)
+        self.review_caption_ru_drafts.pop(draft_key, None)
+        self._log(f"Статус изменён в SQLite: {source} → {new_status}; файл не перемещался")
+        self.v_status.set(f"Статус изменён: {source.name}")
         self._refresh_review_tab(group, reset=True)
-        self._refresh_review_tab(target_group, reset=True)
+        self._refresh_review_tab("rejected" if group == "selected" else "selected", reset=True)
+
 
     def _generate_review_caption(self, source: Path, caption_widget: tk.Text, group: str):
         if self._review_is_busy():
