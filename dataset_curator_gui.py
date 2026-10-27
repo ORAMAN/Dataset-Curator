@@ -1372,6 +1372,9 @@ class DatasetCuratorApp(tk.Tk):
                 continue
             self._apply_review_rows(group, rows_by_group.get(group, []), base_text)
         if added:
+            for group in ("selected", "rejected"):
+                if group not in groups:
+                    self.review_dirty[group] = True
             self._log(f"SQLite: добавлено записей об изображениях — {added}")
 
     def _apply_review_rows(self, group: str, rows: list[dict[str, Any]], base_text: str):
@@ -2530,6 +2533,19 @@ class DatasetCuratorApp(tk.Tk):
             self.v_status.set("Запрошена остановка… текущий файл будет завершён")
             self.stop_button.configure(state="disabled")
 
+    def _mark_review_tabs_dirty_and_refresh_active(self):
+        """Помечает оба списка устаревшими, но обновляет только видимую вкладку."""
+        self.review_dirty["selected"] = True
+        self.review_dirty["rejected"] = True
+        try:
+            active = self.notebook.select()
+            if active == str(self.tab_selected):
+                self.after(25, lambda: self._refresh_review_tab("selected", reset=True, sync_existing=False))
+            elif active == str(self.tab_rejected):
+                self.after(25, lambda: self._refresh_review_tab("rejected", reset=True, sync_existing=False))
+        except tk.TclError:
+            pass
+
     def _apply_progress_event(self, event: tuple):
         _, current, total, filename, stats = event
         self.progress.configure(maximum=max(total, 1), value=current)
@@ -2685,8 +2701,7 @@ class DatasetCuratorApp(tk.Tk):
                 )
                 self._log("ИТОГ\n" + summary.replace("\n", " | "))
                 messagebox.showinfo(APP_TITLE, summary)
-                self.review_dirty["selected"] = True
-                self.review_dirty["rejected"] = True
+                self._mark_review_tabs_dirty_and_refresh_active()
             elif kind == "fatal":
                 _, message, details = event
                 self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
@@ -2697,7 +2712,7 @@ class DatasetCuratorApp(tk.Tk):
                 self.stop_button.configure(state="disabled")
                 self.v_status.set("Ошибка запуска")
                 messagebox.showerror(APP_TITLE, message + "\n\nПодробности записаны в журнал.")
-                self.after(250, lambda: self._refresh_all_review_tabs(sync_existing=False))
+                self._mark_review_tabs_dirty_and_refresh_active()
 
         flush_pending()
         # Частый короткий опрос не даёт очереди логов блокировать поток Tkinter.
