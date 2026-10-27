@@ -1304,6 +1304,12 @@ class DatasetCuratorApp(tk.Tk):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
         card.pack(fill="x", padx=5, pady=5)
 
+        record = self.review_record_cache.get(group, {}).get(str(source))
+        if record is None:
+            catalog = self._catalog_for_current_folder()
+            record = catalog.get_image(source) if catalog else {}
+        record = record or {}
+
         preview_frame = ttk.Frame(card, width=156, height=160)
         preview_frame.pack(side="left", fill="y", padx=(0, 10))
         preview_frame.pack_propagate(False)
@@ -1322,61 +1328,63 @@ class DatasetCuratorApp(tk.Tk):
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
-        caption_path = source.with_suffix(".txt")
-        try:
-            if str(source) in self.review_caption_drafts:
-                caption_value = self.review_caption_drafts[str(source)]
-            else:
-                caption_value = caption_path.read_text(encoding="utf-8-sig") if caption_path.is_file() else ""
-        except OSError as exc:
-            caption_value = ""
-            self._log(f"Не удалось прочитать подпись {caption_path}: {exc}")
+        path_key = str(source)
+        caption_value = self.review_caption_drafts.get(path_key, str(record.get("description_en") or ""))
+        caption_ru_value = self.review_caption_ru_drafts.get(path_key, str(record.get("description_ru") or ""))
 
         caption_header = ttk.Frame(content)
         caption_header.pack(fill="x")
-        ttk.Label(caption_header, text="Подпись (.txt)", style="Muted.TLabel").pack(side="left")
+        ttk.Label(caption_header, text="Описание на английском (для LoRA)", style="Muted.TLabel").pack(side="left")
         caption_state = ttk.Label(
             caption_header,
-            text="Есть подпись" if caption_path.is_file() else "Подпись отсутствует",
+            text="Сохранено в SQLite" if (record.get("description_en") or record.get("description_ru")) else "Описание отсутствует",
             style="Muted.TLabel",
         )
         caption_state.pack(side="right")
 
-        caption_text = tk.Text(content, height=4, wrap="word", undo=True, font=("Segoe UI", 9))
-        caption_text.pack(fill="x", expand=True, pady=(3, 6))
+        caption_text = tk.Text(content, height=3, wrap="word", undo=True, font=("Segoe UI", 9))
+        caption_text.pack(fill="x", expand=True, pady=(3, 5))
         if caption_value:
             caption_text.insert("1.0", caption_value.rstrip("\r\n"))
-        def remember_caption_draft(_event=None, p=str(source), t=caption_text):
-            # after_idle учитывает вставку/вырезание, выполненные стандартными биндингами Tk.
+
+        ttk.Label(content, text="Перевод на русский (для просмотра и редактирования)", style="Muted.TLabel").pack(anchor="w")
+        caption_ru_text = tk.Text(content, height=3, wrap="word", undo=True, font=("Segoe UI", 9))
+        caption_ru_text.pack(fill="x", expand=True, pady=(3, 6))
+        if caption_ru_value:
+            caption_ru_text.insert("1.0", caption_ru_value.rstrip("\r\n"))
+
+        def remember_draft(_event=None, p=path_key, widget=caption_text, ru=False):
             try:
-                self.after_idle(lambda: self.review_caption_drafts.__setitem__(p, t.get("1.0", "end-1c")))
+                target = self.review_caption_ru_drafts if ru else self.review_caption_drafts
+                self.after_idle(lambda: target.__setitem__(p, widget.get("1.0", "end-1c")))
             except tk.TclError:
                 pass
 
         for sequence in ("<KeyRelease>", "<<Paste>>", "<<Cut>>", "<<Undo>>", "<<Redo>>"):
-            caption_text.bind(sequence, remember_caption_draft, add="+")
+            caption_text.bind(sequence, lambda event, p=path_key, t=caption_text: remember_draft(event, p, t, False), add="+")
+            caption_ru_text.bind(sequence, lambda event, p=path_key, t=caption_ru_text: remember_draft(event, p, t, True), add="+")
 
         buttons = ttk.Frame(content)
         buttons.pack(fill="x")
         save_button = ttk.Button(
             buttons,
-            text="Сохранить подпись",
-            command=lambda p=source, t=caption_text: self._save_review_caption(p, t),
+            text="Сохранить оба описания",
+            command=lambda p=source, en=caption_text, ru=caption_ru_text: self._save_review_caption(p, en, ru),
         )
         save_button.pack(side="left")
         generate_button = ttk.Button(
             buttons,
-            text="Сгенерировать",
-            command=lambda p=source, t=caption_text, g=group: self._generate_review_caption(p, t, g),
+            text="Сгенерировать EN + RU",
+            command=lambda p=source, en=caption_text, ru=caption_ru_text, g=group: self._generate_review_caption(p, en, ru, g),
         )
         generate_button.pack(side="left", padx=(6, 0))
-        move_text = "Забраковать → rejected" if group == "selected" else "Вернуть в selected"
+        move_text = "Отклонить (только статус)" if group == "selected" else "Вернуть в выбранные"
         move_style = "Danger.TButton" if group == "selected" else "Accent.TButton"
         move_button = ttk.Button(
             buttons,
             text=move_text,
             style=move_style,
-            command=lambda p=source, g=group, t=caption_text: self._move_review_image(p, g, t),
+            command=lambda p=source, g=group, en=caption_text, ru=caption_ru_text: self._move_review_image(p, g, en, ru),
         )
         move_button.pack(side="left", padx=(6, 0))
         ttk.Button(
@@ -1387,6 +1395,7 @@ class DatasetCuratorApp(tk.Tk):
 
         self.review_card_widgets[(group, str(source))] = {
             "caption": caption_text,
+            "caption_ru": caption_ru_text,
             "generate": generate_button,
             "save": save_button,
             "move": move_button,
