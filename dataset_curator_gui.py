@@ -2685,7 +2685,8 @@ class DatasetCuratorApp(tk.Tk):
                 )
                 self._log("ИТОГ\n" + summary.replace("\n", " | "))
                 messagebox.showinfo(APP_TITLE, summary)
-                self.review_dirty["selected"] = True\n                self.review_dirty["rejected"] = True
+                self.review_dirty["selected"] = True
+                self.review_dirty["rejected"] = True
             elif kind == "fatal":
                 _, message, details = event
                 self._log("КРИТИЧЕСКАЯ ОШИБКА: " + message)
