@@ -30,6 +30,7 @@ models/
 
 # Reports and runtime logs
 dataset_report.csv
+caption_report.csv
 *.log
 *.tmp
 
