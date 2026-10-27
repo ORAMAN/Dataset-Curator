@@ -2617,6 +2617,7 @@ class DatasetCuratorApp(tk.Tk):
         self.export_button.configure(state="normal")
         if added:
             self._log(f"SQLite: добавлено записей об изображениях — {added}")
+            self._mark_review_tabs_dirty_and_refresh_active()
         if error:
             self.v_status.set("Ошибка экспорта")
             self._log(f"ОШИБКА экспорта: {error}")
