@@ -866,6 +866,7 @@ class DatasetCuratorApp(tk.Tk):
         self.review_file_cache: dict[str, list[Path]] = {"selected": [], "rejected": []}
         self.review_visible_count: dict[str, int] = {"selected": 0, "rejected": 0}
         self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
+        self.review_caption_drafts: dict[str, str] = {}
         self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
         self.review_workers: dict[tuple[str, str], threading.Thread] = {}
         self.review_count_vars: dict[str, tk.StringVar] = {}
@@ -1315,7 +1316,10 @@ class DatasetCuratorApp(tk.Tk):
         content.pack(side="left", fill="both", expand=True)
         caption_path = source.with_suffix(".txt")
         try:
-            caption_value = caption_path.read_text(encoding="utf-8-sig") if caption_path.is_file() else ""
+            if str(source) in self.review_caption_drafts:
+                caption_value = self.review_caption_drafts[str(source)]
+            else:
+                caption_value = caption_path.read_text(encoding="utf-8-sig") if caption_path.is_file() else ""
         except OSError as exc:
             caption_value = ""
             self._log(f"Не удалось прочитать подпись {caption_path}: {exc}")
@@ -1332,6 +1336,11 @@ class DatasetCuratorApp(tk.Tk):
         caption_text.pack(fill="x", expand=True, pady=(3, 6))
         if caption_value:
             caption_text.insert("1.0", caption_value.rstrip("\r\n"))
+        caption_text.bind(
+            "<KeyRelease>",
+            lambda _event, p=str(source), t=caption_text: self.review_caption_drafts.__setitem__(p, t.get("1.0", "end-1c")),
+            add="+",
+        )
 
         buttons = ttk.Frame(content)
         buttons.pack(fill="x")
@@ -1405,6 +1414,7 @@ class DatasetCuratorApp(tk.Tk):
                     return False
                 try:
                     sidecar.unlink()
+                    self.review_caption_drafts.pop(str(source), None)
                     if show_message:
                         self.v_status.set(f"Подпись удалена: {sidecar.name}")
                     return True
@@ -1416,6 +1426,7 @@ class DatasetCuratorApp(tk.Tk):
             return False
         try:
             self._write_caption_for_image(source, value)
+            self.review_caption_drafts.pop(str(source), None)
             self._log(f"Подпись сохранена: {sidecar}")
             if show_message:
                 self.v_status.set(f"Подпись сохранена: {sidecar.name}")
@@ -1478,6 +1489,7 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showerror(APP_TITLE, f"Не удалось переместить изображение:\n{exc}")
             return
 
+        self.review_caption_drafts.pop(str(source), None)
         self._log(f"Изображение перемещено: {source} → {target}")
         self.v_status.set(f"Перемещено: {target.name}")
         self._refresh_review_tab(group, reset=True)
@@ -1572,6 +1584,7 @@ class DatasetCuratorApp(tk.Tk):
         path = filedialog.askdirectory(title="Выберите папку с изображениями", initialdir=self.v["input_dir"].get() or str(Path.home()))
         if path:
             self.v["input_dir"].set(path)
+            self.after(100, self._refresh_all_review_tabs)
 
     def _browse_face_model(self):
         path = filedialog.askopenfilename(title="Выберите модель MediaPipe", filetypes=[("MediaPipe TFLite", "*.tflite"), ("Все файлы", "*.*")], initialdir=str(APP_DIR))
@@ -1934,6 +1947,9 @@ class DatasetCuratorApp(tk.Tk):
                     key = (group, path_text)
                     self.review_workers.pop(key, None)
                     card = self.review_card_widgets.get(key)
+                    if not error:
+                        # Сохраняем черновик в памяти, даже если карточка успела скрыться при смене вкладки.
+                        self.review_caption_drafts[path_text] = caption
                     if card:
                         card["generate"].configure(state="normal")
                         card["save"].configure(state="normal")
