@@ -183,7 +183,10 @@ class CatalogStore:
                     clip_category=CASE WHEN excluded.clip_category != '' THEN excluded.clip_category ELSE images.clip_category END,
                     clip_relative_score=COALESCE(excluded.clip_relative_score, images.clip_relative_score),
                     description_en=CASE WHEN excluded.description_en != '' THEN excluded.description_en ELSE images.description_en END,
-                    description_ru=CASE WHEN excluded.description_ru != '' THEN excluded.description_ru ELSE images.description_ru END,
+                    description_ru=CASE
+                        WHEN excluded.description_en != '' THEN excluded.description_ru
+                        ELSE images.description_ru
+                    END,
                     error=excluded.error,
                     updated_at=CURRENT_TIMESTAMP
             """, values)
