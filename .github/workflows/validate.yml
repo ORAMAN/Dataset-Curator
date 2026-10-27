@@ -43,7 +43,7 @@ jobs:
           required_app = {
               "_build_review_tab", "_build_review_card", "_refresh_review_tab",
               "_save_review_caption", "_move_review_image", "_generate_review_caption",
-              "_export_catalog",
+              "_translate_review_caption", "_export_catalog",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -51,7 +51,7 @@ jobs:
           assert 'text="Выбранные"' in source
           assert 'text="Отбракованные"' in source
           assert 'text="📝 Только подписи"' in source
-          assert "translate_en_ru_mymemory" in source
+          assert "translate_en_ru(" in source
           assert "catalog.set_descriptions(source, description_en, description_ru)" in source
           print("Syntax and required GUI/SQLite methods: OK")
           PY
@@ -61,6 +61,7 @@ jobs:
           python - <<'PY'
           import tempfile
           from pathlib import Path
+          import dataset_catalog
           from dataset_catalog import CatalogStore
 
           with tempfile.TemporaryDirectory() as tmp:
@@ -90,6 +91,20 @@ jobs:
               )
               assert len(catalog.list_images("selected")) == 1
               assert not photo.with_suffix(".txt").exists(), "Processing must not create captions next to source photos"
+
+              # Repeated captions reuse the SQLite translation cache rather than calling the API twice.
+              api_calls = []
+              original_translate = dataset_catalog.translate_en_ru_mymemory
+              def fake_translate(text, email=""):
+                  api_calls.append((text, email))
+                  return "Пробный перевод"
+              dataset_catalog.translate_en_ru_mymemory = fake_translate
+              try:
+                  assert catalog.translate_en_ru("common caption", "") == "Пробный перевод"
+                  assert catalog.translate_en_ru("common caption", "") == "Пробный перевод"
+                  assert len(api_calls) == 1, api_calls
+              finally:
+                  dataset_catalog.translate_en_ru_mymemory = original_translate
 
               catalog.set_status(photo, "rejected", "manual review")
               assert catalog.list_images("selected") == []
