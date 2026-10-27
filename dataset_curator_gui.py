@@ -10,6 +10,8 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import importlib.util
+import sys
 import os
 import re
 import queue
@@ -664,9 +666,17 @@ class DatasetProcessor:
                 self.services.load_aesthetic()
             # Загружаем включённые модели заранее, чтобы ошибка модели не возникала в середине набора.
             if self.settings.classify_clip:
-                self.services.load_clip_model()
+                try:
+                    self.services.load_clip_model()
+                except Exception as exc:
+                    self.settings.classify_clip = False
+                    self.log(f"Предупреждение: CLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без классификации.")
             if self.settings.generate_captions:
-                self.services.load_caption_model()
+                try:
+                    self.services.load_caption_model()
+                except Exception as exc:
+                    self.settings.generate_captions = False
+                    self.log(f"Предупреждение: BLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без генерации подписей.")
 
             if self.settings.clean_outputs:
                 output_names = ("selected", "rejected", "bed_size", "blure", "no_or_small_faces", "moree_faces", "duplicate")
@@ -1259,6 +1269,43 @@ class DatasetCuratorApp(tk.Tk):
             if not messagebox.askyesno(APP_TITLE, "Файл модели MediaPipe не найден. Приложение попробует скачать официальный файл при старте.\n\nПродолжить?", icon="warning"):
                 self.notebook.select(self.tab_models)
                 return
+        # Проверяем необязательные BLIP/CLIP-зависимости до запуска рабочего потока.
+        # Отсутствие transformers не должно завершать всю задачу критической ошибкой.
+        ai_features = []
+        if settings.classify_clip:
+            ai_features.append("CLIP (категоризация)")
+        if settings.generate_captions:
+            ai_features.append("BLIP (генерация подписей)")
+        if ai_features:
+            try:
+                transformers_available = importlib.util.find_spec("transformers") is not None
+            except (ImportError, ValueError, ModuleNotFoundError):
+                transformers_available = False
+            if not transformers_available:
+                install_command = (
+                    f'"{sys.executable}" -m pip install '
+                    '"transformers>=4.45,<5.0" "accelerate>=0.30"'
+                )
+                message = (
+                    "Не найден пакет Python «transformers», необходимый для включённых функций:\n\n"
+                    + "\n".join(f"• {feature}" for feature in ai_features)
+                    + "\n\nУстановите зависимость в том же Python, которым запускается приложение:\n"
+                    + install_command
+                    + "\n\nВ комплект также входит install_optional_ai.bat. После установки перезапустите приложение.\n\n"
+                    "Продолжить обработку БЕЗ перечисленных AI-функций?\n"
+                    "«Да» — временно отключить их и продолжить обычную фильтрацию.\n"
+                    "«Нет» — отменить запуск и установить зависимость."
+                )
+                if not messagebox.askyesno(APP_TITLE, message, icon="warning"):
+                    return
+                if settings.classify_clip:
+                    self.v["classify_clip"].set(False)
+                    settings.classify_clip = False
+                if settings.generate_captions:
+                    self.v["generate_captions"].set(False)
+                    settings.generate_captions = False
+                self._save_current_config()
+
         self._save_current_config()
         self.settings_snapshot = settings
         self.stop_event.clear()
