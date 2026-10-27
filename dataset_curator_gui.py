@@ -1051,25 +1051,25 @@ class DatasetCuratorApp(tk.Tk):
         aesthetic = ttk.LabelFrame(right, text="Эстетическая оценка", padding=10)
         aesthetic.pack(fill="x", pady=(0, 8))
         ttk.Checkbutton(aesthetic, text="Использовать aesthetic-predictor", variable=self.v["check_aesthetic"]).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(aesthetic, text="Отправлять в selected от:").grid(row=1, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(aesthetic, text="Автоматически выбирать от:").grid(row=1, column=0, sticky="w", pady=(7, 0))
         ttk.Entry(aesthetic, textvariable=self.v["aesthetic_keep"], width=8).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(7, 0))
         ttk.Label(aesthetic, text="Пограничная зона от:").grid(row=2, column=0, sticky="w", pady=(7, 0))
         ttk.Entry(aesthetic, textvariable=self.v["aesthetic_maybe"], width=8).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(7, 0))
-        ttk.Label(aesthetic, text="Ниже пограничной зоны → rejected.\nПограничные файлы получают префикс !_оценка_.", style="Muted.TLabel").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(aesthetic, text="Ниже пограничного порога статус станет «отклонено»; файлы останутся на месте.", style="Muted.TLabel").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         duplicates = ttk.LabelFrame(right, text="Похожие изображения", padding=10)
         duplicates.pack(fill="x", pady=(0, 8))
-        ttk.Checkbutton(duplicates, text="После фильтрации искать дубликаты в selected", variable=self.v["find_duplicates"]).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(duplicates, text="После фильтрации искать дубликаты среди выбранных в SQLite", variable=self.v["find_duplicates"]).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(duplicates, text="Метод хеша:").grid(row=1, column=0, sticky="w", pady=(7, 0))
         ttk.Combobox(duplicates, textvariable=self.v["duplicate_hash"], values=["phash", "dhash", "whash", "ahash"], state="readonly", width=10).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(7, 0))
         ttk.Label(duplicates, text="Расстояние Хэмминга:").grid(row=2, column=0, sticky="w", pady=(7, 0))
         ttk.Entry(duplicates, textvariable=self.v["duplicate_distance"], width=8).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(7, 0))
-        ttk.Checkbutton(duplicates, text="Только показать, не перемещать (безопасно)", variable=self.v["duplicate_dry_run"]).grid(row=3, column=0, columnspan=2, sticky="w", pady=(7, 0))
-        ttk.Label(duplicates, text="Порог 8 — умеренно строгий для 64-битного хеша.\nРеальное перемещение включайте после проверки тестового режима.", style="Muted.TLabel", wraplength=390).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(duplicates, text="Только показать, не менять статус", variable=self.v["duplicate_dry_run"]).grid(row=3, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        ttk.Label(duplicates, text="Порог 8 — умеренно строгий для 64-битного хеша. При отключённом тестовом режиме меняется только статус в SQLite.", style="Muted.TLabel", wraplength=390).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         warning = ttk.LabelFrame(right, text="Безопасность", padding=10)
         warning.pack(fill="x")
-        ttk.Label(warning, text="Исходные файлы не удаляются: они копируются в подпапки.\nСканируются только файлы в корне выбранной папки; ранее созданные подпапки не обрабатываются повторно.", wraplength=410).pack(anchor="w")
+        ttk.Label(warning, text="Фото не перемещаются и не переименовываются. Статусы и оба описания хранятся в dataset_curator.sqlite3. Экспорт в отдельную папку выполняется только по кнопке «Экспортировать набор».", wraplength=410).pack(anchor="w")
 
     def _on_caption_only_toggle(self):
         # Отдельный режим сам включает генерацию подписей при построении Settings,
@@ -1080,7 +1080,7 @@ class DatasetCuratorApp(tk.Tk):
         tab = self.tab_models
         captions = ttk.LabelFrame(tab, text="Автоматические подписи для датасета", padding=10)
         captions.pack(fill="x", pady=(0, 10))
-        ttk.Checkbutton(captions, text="Генерировать .txt-подписи для изображений в selected при обычной фильтрации", variable=self.v["generate_captions"]).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(captions, text="Генерировать описание EN/RU для выбранных изображений при фильтрации и сохранять в SQLite", variable=self.v["generate_captions"]).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(
             captions,
             text="ТОЛЬКО ПОДПИСИ — без фильтрации, оценки эстетики, детектора лиц и поиска дубликатов",
@@ -1089,7 +1089,7 @@ class DatasetCuratorApp(tk.Tk):
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
         ttk.Checkbutton(
             captions,
-            text="Пропускать изображения, у которых уже есть одноимённый .txt (не перезаписывать ручные подписи)",
+            text="Пропускать изображения, у которых уже заполнено английское описание в SQLite",
             variable=self.v["skip_existing_captions"],
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
         ttk.Label(captions, text="Модель:").grid(row=3, column=0, sticky="w", pady=(7, 0))
@@ -1126,7 +1126,7 @@ class DatasetCuratorApp(tk.Tk):
         self.clip_labels_text = tk.Text(clip, height=8, wrap="word", undo=True, font=("Consolas", 9))
         self.clip_labels_text.pack(fill="both", expand=True)
         self.clip_labels_text.insert("1.0", self.config_data.get("clip_labels", DEFAULT_CLIP_LABELS))
-        ttk.Checkbutton(clip, text="Добавлять выбранную CLIP-категорию в конец .txt-подписи BLIP", variable=self.v["append_clip_label_to_caption"]).pack(anchor="w", pady=(7, 0))
+        ttk.Checkbutton(clip, text="Добавлять выбранную CLIP-категорию в конец английского описания BLIP", variable=self.v["append_clip_label_to_caption"]).pack(anchor="w", pady=(7, 0))
         ttk.Label(clip, text="Важно: CLIP не генерирует описания — он сравнивает изображение с текстовыми категориями. Для генерации подписи используется BLIP. Уверенность CLIP относительная и зависит от набора категорий.", style="Muted.TLabel", wraplength=850).pack(anchor="w", pady=(7, 0))
 
         face_box = ttk.LabelFrame(tab, text="Модель MediaPipe для поиска лиц", padding=10)
@@ -1984,14 +1984,8 @@ class DatasetCuratorApp(tk.Tk):
         if caption_only_override:
             settings.caption_only = True
             settings.generate_captions = True
-        if settings.clean_outputs and not settings.caption_only and not messagebox.askyesno(
-            APP_TITLE,
-            "Будут удалены только выходные папки этого приложения: selected, rejected, bed_size, blure, "
-            "no_or_small_faces, moree_faces, duplicate, а также старый dataset_report.csv.\n"
-            "Исходные изображения в корне папки останутся.\n\nПродолжить?",
-            icon="warning",
-        ):
-            return
+        # Переключатель clean_outputs сохранён только для совместимости со старой конфигурацией.
+        # В режиме SQLite ни одна папка результата автоматически не удаляется.
         if not settings.caption_only and settings.check_faces and not Path(settings.face_model_path).expanduser().is_file():
             if not messagebox.askyesno(APP_TITLE, "Файл модели MediaPipe не найден. Приложение попробует скачать официальный файл при старте.\n\nПродолжить?", icon="warning"):
                 self.notebook.select(self.tab_models)
@@ -2141,7 +2135,7 @@ class DatasetCuratorApp(tk.Tk):
                         f"Создано подписей: {stats['captions']}\n"
                         f"Пропущено (подпись уже существует): {stats['captions_skipped']}\n"
                         f"Кандидатов в дубликаты: {stats['duplicates']}\n\n"
-                        f"CSV-отчёт: {report_path or 'не сохранён'}"
+                        f"База SQLite: {report_path or 'путь не определён'}"
                     )
                     self._log("ИТОГ\n" + summary.replace("\n", " | "))
                     messagebox.showinfo(APP_TITLE, summary)
