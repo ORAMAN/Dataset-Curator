@@ -1227,35 +1227,25 @@ class DatasetCuratorApp(tk.Tk):
         except tk.TclError:
             pass
 
-    def _review_files(self, group: str) -> list[Path]:
+    def _catalog_for_current_folder(self, sync_existing: bool = False) -> CatalogStore | None:
         base = self._review_input_dir()
         if base is None or not base.is_dir():
+            return None
+        catalog = CatalogStore(base)
+        if sync_existing:
+            added = catalog.sync_existing_files()
+            if added:
+                self._log(f"SQLite: добавлено записей об изображениях — {added}")
+        return catalog
+
+    def _review_files(self, group: str) -> list[Path]:
+        catalog = self._catalog_for_current_folder(sync_existing=True)
+        if catalog is None:
+            self.review_record_cache[group] = {}
             return []
-        if group == "selected":
-            folders = [base / "selected"]
-        else:
-            # Собираем все типы брака, а не только низкий aesthetic score.
-            folders = [
-                base / "rejected",
-                base / "bed_size",
-                base / "blure",
-                base / "no_or_small_faces",
-                base / "moree_faces",
-                base / "duplicate",
-            ]
-        files: list[Path] = []
-        for folder in folders:
-            if not folder.is_dir() or folder.is_symlink():
-                continue
-            try:
-                files.extend(
-                    path for path in folder.iterdir()
-                    if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-                )
-            except OSError as exc:
-                self._log(f"Не удалось прочитать папку {folder}: {exc}")
-        # Файлы с одинаковым именем из разных папок могут быть отдельными изображениями.
-        return sorted(files, key=lambda path: (path.parent.name.casefold(), path.name.casefold(), str(path).casefold()))
+        rows = catalog.list_images(group)
+        self.review_record_cache[group] = {str(row["path"]): row for row in rows}
+        return [Path(row["path"]) for row in rows]
 
     def _refresh_all_review_tabs(self):
         self._refresh_review_tab("selected", reset=True)
