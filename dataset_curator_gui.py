@@ -1288,21 +1288,51 @@ class DatasetCuratorApp(tk.Tk):
             record = catalog.get_image(source) if catalog else {}
         record = record or {}
 
-        preview_frame = ttk.Frame(card, width=156, height=160)
+        preview_frame = ttk.Frame(card, width=166, height=184)
         preview_frame.pack(side="left", fill="y", padx=(0, 10))
         preview_frame.pack_propagate(False)
+
+        stored_width = record.get("width")
+        stored_height = record.get("height")
+        try:
+            stored_width, stored_height = int(stored_width or 0), int(stored_height or 0)
+        except (TypeError, ValueError):
+            stored_width = stored_height = 0
+        size_text = (
+            f"{stored_width:,} × {stored_height:,} px".replace(",", " ")
+            if stored_width > 0 and stored_height > 0
+            else "Размер неизвестен"
+        )
+        preview_size_var = tk.StringVar(value=size_text)
+        size_label = ttk.Label(
+            preview_frame, textvariable=preview_size_var, style="Muted.TLabel", anchor="center"
+        )
+        size_label.pack(side="bottom", fill="x", pady=(4, 0))
+
         try:
             from PIL import Image, ImageOps, ImageTk
             with Image.open(source) as raw:
                 image = ImageOps.exif_transpose(raw).convert("RGB")
+                image_width, image_height = image.size
+                preview_size_var.set(
+                    f"{image_width:,} × {image_height:,} px".replace(",", " ")
+                )
                 image.thumbnail((144, 144))
                 thumbnail = ImageTk.PhotoImage(image.copy())
             self.review_photo_refs[group].append(thumbnail)
-            image_label = ttk.Label(preview_frame, image=thumbnail, anchor="center")
+            image_label = ttk.Label(preview_frame, image=thumbnail, anchor="center", cursor="hand2")
             image_label.image = thumbnail
             image_label.pack(fill="both", expand=True)
+            image_label.bind(
+                "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
+            )
+            image_label.bind(
+                "<Enter>", lambda _event, widget=image_label: widget.configure(cursor="hand2"), add="+"
+            )
         except Exception as exc:
-            ttk.Label(preview_frame, text=f"Не удалось\nзагрузить фото\n{exc}", wraplength=145).pack(fill="both", expand=True)
+            ttk.Label(
+                preview_frame, text=f"Не удалось\nзагрузить фото\n{exc}", wraplength=145
+            ).pack(fill="both", expand=True)
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
@@ -1388,6 +1418,117 @@ class DatasetCuratorApp(tk.Tk):
             "group": group,
             "path": source,
         }
+
+    def _show_review_image(self, source: Path):
+        """Показывает исходное изображение в отдельном окне с масштабированием."""
+        if not source.is_file():
+            messagebox.showerror(APP_TITLE, f"Файл изображения не найден:\n{source}")
+            return
+
+        try:
+            from PIL import Image, ImageOps, ImageTk
+            with Image.open(source) as raw:
+                full_image = ImageOps.exif_transpose(raw).convert("RGB")
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось открыть изображение:\n{source}\n\n{exc}")
+            return
+
+        image_width, image_height = full_image.size
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        max_image_width = max(320, int(screen_width * 0.88))
+        max_image_height = max(240, int(screen_height * 0.74))
+        fit_zoom = min(max_image_width / image_width, max_image_height / image_height)
+        # Небольшие изображения можно увеличить до 200%; крупные сразу помещаются на экран.
+        initial_zoom = max(0.05, min(2.0, fit_zoom))
+
+        window_width = min(screen_width - 30, max(640, int(image_width * initial_zoom) + 48))
+        window_height = min(screen_height - 50, max(480, int(image_height * initial_zoom) + 112))
+        dialog = tk.Toplevel(self)
+        dialog.title(
+            f"{source.name} — {image_width:,} × {image_height:,} px".replace(",", " ")
+        )
+        dialog.transient(self)
+        dialog.geometry(f"{window_width}x{window_height}")
+        dialog.minsize(min(520, screen_width - 30), min(360, screen_height - 50))
+
+        container = ttk.Frame(dialog, padding=8)
+        container.pack(fill="both", expand=True)
+
+        toolbar = ttk.Frame(container)
+        toolbar.pack(fill="x")
+        ttk.Label(
+            toolbar,
+            text=f"Исходный размер: {image_width:,} × {image_height:,} px".replace(",", " "),
+            style="Muted.TLabel",
+        ).pack(side="left")
+
+        zoom_var = tk.StringVar(value="")
+        state = {"zoom": initial_zoom}
+        photo_ref = {"image": None}
+
+        ttk.Button(
+            toolbar, text="−", width=3,
+            command=lambda: redraw(state["zoom"] / 1.25),
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            toolbar, text="+", width=3,
+            command=lambda: redraw(state["zoom"] * 1.25),
+        ).pack(side="right", padx=(4, 0))
+        ttk.Label(toolbar, textvariable=zoom_var, width=6, anchor="center").pack(side="right")
+        ttk.Button(
+            toolbar, text="100%",
+            command=lambda: redraw(1.0),
+        ).pack(side="right", padx=(8, 0))
+        ttk.Button(
+            toolbar, text="Уместить",
+            command=lambda: redraw(min(1.0, max_image_width / image_width, max_image_height / image_height)),
+        ).pack(side="right", padx=(8, 0))
+        ttk.Button(toolbar, text="Закрыть", command=dialog.destroy).pack(side="right", padx=(8, 0))
+
+        image_frame = ttk.Frame(container)
+        image_frame.pack(fill="both", expand=True, pady=(8, 0))
+        image_frame.rowconfigure(0, weight=1)
+        image_frame.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            image_frame,
+            highlightthickness=0,
+            background=self.palette["app"],
+            xscrollincrement=32,
+            yscrollincrement=32,
+        )
+        xscroll = ttk.Scrollbar(image_frame, orient="horizontal", command=canvas.xview)
+        yscroll = ttk.Scrollbar(image_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(xscrollcommand=xscroll.set, yscrollcommand=yscroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        image_item = canvas.create_image(0, 0, anchor="nw")
+
+        def redraw(zoom: float):
+            zoom = max(0.1, min(8.0, float(zoom)))
+            resized_size = (
+                max(1, int(round(image_width * zoom))),
+                max(1, int(round(image_height * zoom))),
+            )
+            resampling = getattr(Image, "Resampling", Image).LANCZOS
+            resized = full_image.resize(resized_size, resampling)
+            photo = ImageTk.PhotoImage(resized, master=dialog)
+            canvas.itemconfigure(image_item, image=photo)
+            canvas.configure(scrollregion=(0, 0, resized_size[0], resized_size[1]))
+            photo_ref["image"] = photo
+            state["zoom"] = zoom
+            zoom_var.set(f"{zoom * 100:.0f}%")
+
+        def zoom_with_wheel(event):
+            factor = 1.15 if event.delta > 0 else 1 / 1.15
+            redraw(state["zoom"] * factor)
+            return "break"
+
+        canvas.bind("<Control-MouseWheel>", zoom_with_wheel, add="+")
+        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"), add="+")
+        dialog.bind("<Escape>", lambda _event: dialog.destroy(), add="+")
+        redraw(initial_zoom)
 
     def _review_is_busy(self) -> bool:
         if self.worker and self.worker.is_alive():
