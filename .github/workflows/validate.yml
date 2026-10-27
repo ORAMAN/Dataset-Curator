@@ -59,7 +59,7 @@ jobs:
           assert 'text="📝 Только подписи"' in source
           assert "translate_en_ru(" in source
           assert "catalog.set_descriptions(source, description_en, description_ru)" in source
-          assert "preview_size_var.set(" in source, "Review cards must show image dimensions"
+          assert "preview_size_var = tk.StringVar(" in source and "size_var.set(" in source, "Review cards must show image dimensions"
           assert '"<Button-1>"' in source and "self._show_review_image(p)" in source
           assert '"Уместить"' in source and '"100%"' in source
           assert "zoom_with_wheel" in source, "Image viewer must support Ctrl+mouse-wheel zoom"
