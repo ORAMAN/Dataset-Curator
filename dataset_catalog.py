@@ -249,17 +249,31 @@ class CatalogStore:
             ).fetchone()
         return int(row["count"] if row else 0)
 
-    def list_review_images(self, group: str) -> list[dict[str, Any]]:
-        """Returns only fields needed by the GUI; avoids loading AI metrics for every card."""
+    def list_review_images(self, group: str, sort_by: str = "name") -> list[dict[str, Any]]:
+        """Returns review-card fields, with optional filename or pixel-area sorting."""
         values = self._status_values(group)
         placeholders = ",".join("?" for _ in values)
+        # Missing dimensions always remain at the end so they do not look like tiny images.
+        sort_sql = {
+            "name": "filename COLLATE NOCASE, path COLLATE NOCASE",
+            "resolution_desc": (
+                "CASE WHEN width IS NULL OR height IS NULL THEN 1 ELSE 0 END, "
+                "(width * height) DESC, width DESC, height DESC, "
+                "filename COLLATE NOCASE, path COLLATE NOCASE"
+            ),
+            "resolution_asc": (
+                "CASE WHEN width IS NULL OR height IS NULL THEN 1 ELSE 0 END, "
+                "(width * height) ASC, width ASC, height ASC, "
+                "filename COLLATE NOCASE, path COLLATE NOCASE"
+            ),
+        }.get(sort_by, "filename COLLATE NOCASE, path COLLATE NOCASE")
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT path, filename, status, width, height, description_en, description_ru
                 FROM images
                 WHERE status IN ({placeholders})
-                ORDER BY filename COLLATE NOCASE, path COLLATE NOCASE
+                ORDER BY {sort_sql}
                 """,
                 values,
             ).fetchall()
