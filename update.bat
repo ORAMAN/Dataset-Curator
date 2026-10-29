@@ -213,6 +213,7 @@ echo Для запуска перейдите в папку проекта и о
 echo Для установки зависимостей используйте requirements.txt; не переустанавливайте PyTorch/CUDA без необходимости.
 goto :success
 
+
 :post_update
 echo.
 echo Настройки dataset_curator_settings.json, hf_token.txt, модель MediaPipe, отчёты
@@ -225,16 +226,32 @@ if /I "!RUN_DEPS!"=="Y" (
     if not exist "!PYTHON!" set "PYTHON=python"
     REM Use the same interpreter as start_dataset_curator.bat; do not let uv select another Python.
 
-    REM Prefer requirements.txt; support repositories that contain only the app-specific list.
+    REM Prefer the repository's requirements file if it exists in the working tree.
     set "REQUIREMENTS_FILE="
     if exist "%PROJECT_ROOT%\requirements.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements.txt"
     if not defined REQUIREMENTS_FILE if exist "%PROJECT_ROOT%\requirements_dataset_curator.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements_dataset_curator.txt"
+
+    REM A sparse checkout or a manually removed file can leave the repo up-to-date but omit the manifest.
+    if not defined REQUIREMENTS_FILE if exist ".git" (
+        echo [WARN] Файлы зависимостей отсутствуют в рабочей папке. Пытаюсь восстановить их из Git...
+        git checkout --ignore-skip-worktree-bits HEAD -- requirements.txt >nul 2>&1
+        if exist "%PROJECT_ROOT%\requirements.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements.txt"
+        if not defined REQUIREMENTS_FILE (
+            git checkout --ignore-skip-worktree-bits HEAD -- requirements_dataset_curator.txt >nul 2>&1
+            if exist "%PROJECT_ROOT%\requirements_dataset_curator.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements_dataset_curator.txt"
+        )
+    )
+
+    REM Last resort: restore the canonical requirements.txt directly from the public repository.
     if not defined REQUIREMENTS_FILE (
-        echo [ERROR] Не найден файл зависимостей.
-        echo Ожидался один из файлов:
-        echo   %PROJECT_ROOT%\requirements.txt
-        echo   %PROJECT_ROOT%\requirements_dataset_curator.txt
-        echo Репозиторий обновлён, но зависимости установить не удалось.
+        echo [WARN] Не удалось восстановить файл через Git. Скачиваю requirements.txt с GitHub...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $target=Join-Path $env:PROJECT_ROOT 'requirements.txt'; Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/ORAMAN/Dataset-Curator/main/requirements.txt' -OutFile $target"
+        if exist "%PROJECT_ROOT%\requirements.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements.txt"
+    )
+
+    if not defined REQUIREMENTS_FILE (
+        echo [ERROR] Не удалось получить файл зависимостей ни из Git, ни с GitHub.
+        echo Проверьте доступ к https://raw.githubusercontent.com/ORAMAN/Dataset-Curator/main/requirements.txt
         goto :error
     )
 
