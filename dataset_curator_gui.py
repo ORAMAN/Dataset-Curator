@@ -461,10 +461,17 @@ def deduplicate_selected(
 
 
 class DatasetProcessor:
-    def __init__(self, settings: Settings, stop_event: threading.Event, send: Callable[[tuple], None]):
+    def __init__(
+        self,
+        settings: Settings,
+        stop_event: threading.Event,
+        send: Callable[[tuple], None],
+        paths_override: list[Path] | None = None,
+    ):
         self.settings = settings
         self.stop_event = stop_event
         self.send = send
+        self.paths_override = [Path(path) for path in paths_override] if paths_override is not None else None
         self.stats = {
             "selected": 0, "maybe": 0, "rejected": 0, "small_resolution": 0,
             "no_face": 0, "multiple_faces": 0, "blurry": 0, "errors": 0,
@@ -704,16 +711,27 @@ class DatasetProcessor:
         if not input_dir.is_dir():
             raise NotADirectoryError(f"Папка не существует: {input_dir}")
 
-        # Синхронизируем только записи каталога. Исходные фото остаются на местах;
-        # существующие старые папки selected/rejected импортируются в БД без изменений.
-        imported = self.catalog.sync_existing_files()
-        scan_root = input_dir.rglob("*") if self.settings.recursive_scan else input_dir.iterdir()
-        paths = sorted(p for p in scan_root if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
-        if not paths:
-            # В базе могут остаться ранее импортированные фото только из папок результата.
-            if not self.catalog.list_images("selected") and not self.catalog.list_images("rejected"):
-                raise FileNotFoundError("В выбранной папке и каталоге SQLite не найдено изображений.")
-        scan_scope = "в папке и всех подпапках" if self.settings.recursive_scan else "непосредственно в выбранной папке"
+        imported = 0
+        if self.paths_override is not None:
+            paths, skipped_registered = self.catalog.prepare_files_for_processing(self.paths_override)
+            self.log(
+                f"Добавление без полного сканирования: новых/ожидающих обработки файлов — {len(paths)}, "
+                f"уже зарегистрировано и пропущено — {skipped_registered}"
+            )
+            scan_scope = "выбранных файлов"
+            if not paths:
+                self.log("Новых файлов для обработки нет. Каталог и существующие записи не изменены.")
+                self.send(("done", dict(self.stats), str(self.catalog.db_path), self.stop_event.is_set()))
+                return
+        else:
+            # Standard mode retains the existing directory scan/import behavior.
+            imported = self.catalog.sync_existing_files()
+            scan_root = input_dir.rglob("*") if self.settings.recursive_scan else input_dir.iterdir()
+            paths = sorted(p for p in scan_root if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
+            scan_scope = "в папке и всех подпапках" if self.settings.recursive_scan else "непосредственно в выбранной папке"
+            if not paths:
+                if not self.catalog.list_images("selected") and not self.catalog.list_images("rejected"):
+                    raise FileNotFoundError("В выбранной папке и каталоге SQLite не найдено изображений.")
         self.log(f"Найдено изображений {scan_scope}: {len(paths)}")
         self.log(f"SQLite: {self.catalog.db_path}")
         if imported:
@@ -859,6 +877,7 @@ class DatasetCuratorApp(tk.Tk):
         self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
         self.review_workers: dict[tuple[str, str], threading.Thread] = {}
         self.review_count_vars: dict[str, tk.StringVar] = {}
+        self.review_sort_vars: dict[str, tk.StringVar] = {}
         self.review_canvases: dict[str, tk.Canvas] = {}
         self.review_list_frames: dict[str, ttk.Frame] = {}
         self.review_load_more_buttons: dict[str, ttk.Button] = {}
@@ -986,6 +1005,11 @@ class DatasetCuratorApp(tk.Tk):
         folder_entry = ttk.Entry(folder_row, textvariable=self.v["input_dir"])
         folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Button(folder_row, text="Обзор…", command=self._browse_folder).pack(side="left")
+        ttk.Button(
+            folder_row,
+            text="Добавить новые…",
+            command=self._add_new_files,
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(folder_row, text="Обновить каталог", command=self._refresh_all_review_tabs).pack(side="left", padx=(8, 0))
         ttk.Checkbutton(
             folder_frame,
@@ -1263,6 +1287,26 @@ class DatasetCuratorApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
 
         ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
+        saved_sort = self.config_data.get(f"review_sort_{group}", self.config_data.get("review_sort", "Имя файла"))
+        sort_values = ("Имя файла", "Разрешение: больше сначала", "Разрешение: меньше сначала")
+        if saved_sort not in sort_values:
+            saved_sort = "Имя файла"
+        sort_var = tk.StringVar(value=saved_sort)
+        self.review_sort_vars[group] = sort_var
+        ttk.Label(toolbar, text="Сортировка:", style="Muted.TLabel").pack(side="left", padx=(12, 4))
+        sort_combo = ttk.Combobox(
+            toolbar,
+            textvariable=sort_var,
+            values=sort_values,
+            state="readonly",
+            width=25,
+        )
+        sort_combo.pack(side="left", padx=(0, 8))
+        sort_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event, g=group: self._on_review_sort_changed(g),
+            add="+",
+        )
         if group == "selected":
             ttk.Button(
                 toolbar, text="📝 Создать описания без текста",
@@ -1395,6 +1439,36 @@ class DatasetCuratorApp(tk.Tk):
         self.review_record_cache[group] = {str(row["path"]): row for row in rows}
         return [Path(row["path"]) for row in rows]
 
+    def _review_sort_key(self, row: dict[str, Any], mode: str):
+        filename = str(row.get("filename") or Path(str(row.get("path") or "")).name).casefold()
+        path_text = str(row.get("path") or "").casefold()
+        try:
+            width = int(row.get("width") or 0)
+            height = int(row.get("height") or 0)
+        except (TypeError, ValueError, OverflowError):
+            width = height = 0
+        missing = width <= 0 or height <= 0
+        pixels = width * height
+        if mode == "Разрешение: больше сначала":
+            return (missing, -pixels, -width, -height, filename, path_text)
+        if mode == "Разрешение: меньше сначала":
+            return (missing, pixels, width, height, filename, path_text)
+        return (filename, path_text)
+
+    def _on_review_sort_changed(self, group: str):
+        """Resort cached rows; no directory walk or database query is needed."""
+        self._schedule_save_config()
+        if self.review_loading.get(group, False):
+            # The async load applies the current sort mode when it arrives.
+            return
+        if self.review_loaded.get(group, False):
+            base = self._review_input_dir()
+            if base is not None and str(base) == self.review_base_paths.get(group, ""):
+                rows = list(self.review_record_cache.get(group, {}).values())
+                self._apply_review_rows(group, rows, str(base))
+                return
+        self._refresh_review_tab(group, reset=True, sync_existing=False)
+
     def _refresh_all_review_tabs(self, sync_existing: bool = True):
         """Один фоновый проход по папке и базе для обеих вкладок."""
         base = self._review_input_dir()
@@ -1514,6 +1588,8 @@ class DatasetCuratorApp(tk.Tk):
 
     def _apply_review_rows(self, group: str, rows: list[dict[str, Any]], base_text: str):
         """Обновляет только запрошенную вкладку, затем создаёт карточки небольшими порциями."""
+        mode = self.review_sort_vars.get(group, tk.StringVar(value="Имя файла")).get()
+        rows = sorted(rows, key=lambda row: self._review_sort_key(row, mode))
         for key in [key for key in self.review_card_widgets if key[0] == group]:
             self.review_card_widgets.pop(key, None)
         list_frame = self.review_list_frames[group]
@@ -2688,6 +2764,8 @@ class DatasetCuratorApp(tk.Tk):
         """Снимает значения всех контролов даже тогда, когда форма заполнена не полностью."""
         data = {key: var.get() for key, var in self.v.items()}
         data["clip_labels"] = self.clip_labels_text.get("1.0", "end-1c") if self.clip_labels_text else DEFAULT_CLIP_LABELS
+        for group, variable in self.review_sort_vars.items():
+            data[f"review_sort_{group}"] = variable.get()
         data["theme"] = self.theme_name
         current_state = "normal"
         try:
@@ -2844,7 +2922,53 @@ class DatasetCuratorApp(tk.Tk):
         """Запускает отдельный режим подписей одним нажатием, не меняя сохранённый режим фильтрации."""
         self._start(caption_only_override=True)
 
-    def _start(self, caption_only_override: bool = False):
+    def _add_new_files(self):
+        """Select explicit image files and process only this batch, without directory scanning."""
+        if self._review_is_busy():
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Сначала выберите существующую исходную папку.")
+            return
+        selected = filedialog.askopenfilenames(
+            parent=self,
+            title="Выберите новые изображения для добавления в каталог",
+            initialdir=str(base),
+            filetypes=[
+                ("Изображения", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
+                ("Все файлы", "*.*"),
+            ],
+        )
+        if not selected:
+            return
+
+        paths: list[Path] = []
+        outside: list[str] = []
+        for raw_path in selected:
+            path = Path(raw_path).expanduser().resolve()
+            if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+                continue
+            try:
+                path.relative_to(base.resolve())
+            except ValueError:
+                outside.append(str(path))
+                continue
+            paths.append(path)
+
+        if outside:
+            messagebox.showerror(
+                APP_TITLE,
+                "Все добавляемые изображения должны находиться внутри выбранной исходной папки.\n\n"
+                + "\n".join(outside[:5])
+                + ("\n…" if len(outside) > 5 else ""),
+            )
+            return
+        if not paths:
+            messagebox.showinfo(APP_TITLE, "Не выбраны поддерживаемые файлы изображений.")
+            return
+        self._start(paths_override=paths)
+
+    def _start(self, caption_only_override: bool = False, paths_override: list[Path] | None = None):
         if self.worker and self.worker.is_alive():
             return
         if self.export_worker and self.export_worker.is_alive():
@@ -2916,22 +3040,38 @@ class DatasetCuratorApp(tk.Tk):
         self._save_current_config()
         self.settings_snapshot = settings
         self.stop_event.clear()
-        self.progress.configure(value=0, maximum=100)
-        self.v_progress.set("Обработано: 0 / …")
-        self.v_status.set("Подготовка моделей…")
+        self.progress.configure(value=0, maximum=max(len(paths_override), 1) if paths_override is not None else 100)
+        self.v_progress.set(
+            f"Обработано выбранных файлов: 0 / {len(paths_override)}"
+            if paths_override is not None else "Обработано: 0 / …"
+        )
+        self.v_status.set("Подготовка выбранных файлов…" if paths_override is not None else "Подготовка моделей…")
         self.start_button.configure(state="disabled")
         self.caption_only_button.configure(state="disabled")
         self.export_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.notebook.select(self.tab_log)
         self._log("=" * 68)
-        self._log("Начало обработки")
-        self.worker = threading.Thread(target=self._worker_main, args=(settings,), daemon=True, name="DatasetCuratorWorker")
+        if paths_override is not None:
+            self._log(f"Добавление и обработка выбранных файлов без полного сканирования: {len(paths_override)}")
+        else:
+            self._log("Начало обработки")
+        self.worker = threading.Thread(
+            target=self._worker_main,
+            args=(settings, paths_override),
+            daemon=True,
+            name="DatasetCuratorWorker",
+        )
         self.worker.start()
 
-    def _worker_main(self, settings: Settings):
+    def _worker_main(self, settings: Settings, paths_override: list[Path] | None = None):
         try:
-            DatasetProcessor(settings, self.stop_event, self.event_queue.put).run()
+            DatasetProcessor(
+                settings,
+                self.stop_event,
+                self.event_queue.put,
+                paths_override=paths_override,
+            ).run()
         except Exception as exc:
             self.event_queue.put(("fatal", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
