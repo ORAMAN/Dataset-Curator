@@ -1153,6 +1153,15 @@ class DatasetCuratorApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
 
         ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
+        if group == "selected":
+            ttk.Button(
+                toolbar, text="📝 Создать описания без текста",
+                command=self._generate_missing_selected_captions,
+            ).pack(side="left", padx=(10, 0))
+            ttk.Button(
+                toolbar, text="Ключевые слова…",
+                command=self._open_selected_keyword_tool,
+            ).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g, reset=True, sync_existing=True)).pack(side="right")
         ttk.Button(
             toolbar,
@@ -1597,6 +1606,13 @@ class DatasetCuratorApp(tk.Tk):
         image_label.bind(
             "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
         )
+        if group == "selected":
+            ttk.Button(
+                preview_frame,
+                text="✖ Удалить файл",
+                style="Danger.TButton",
+                command=lambda p=source, g=group: self._delete_review_image_file(p, g),
+            ).pack(side="bottom", fill="x", pady=(4, 0))
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
@@ -1991,6 +2007,212 @@ class DatasetCuratorApp(tk.Tk):
         # Вторую вкладку обновим в фоне только при переходе на неё.
         self.review_dirty[target_group] = True
 
+
+    def _generate_missing_selected_captions(self):
+        """Generate and save descriptions for every selected image with an empty EN caption."""
+        if self._review_is_busy():
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        try:
+            settings = self._get_settings()
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        catalog = CatalogStore(base)
+        rows = catalog.list_images("selected")
+        missing = [
+            row for row in rows
+            if not str(row.get("description_en") or "").strip()
+            and Path(str(row.get("path") or "")).is_file()
+        ]
+        if not missing:
+            messagebox.showinfo(APP_TITLE, "У всех выбранных изображений уже есть английское описание.")
+            return
+        if importlib.util.find_spec("transformers") is None:
+            messagebox.showerror(
+                APP_TITLE,
+                "Для генерации описаний необходим пакет transformers. Запустите install_optional_ai.bat и повторите попытку.",
+            )
+            return
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Создать описания для {len(missing)} выбранных изображений без английского описания?\\n"
+            "Результаты будут сохранены в SQLite; существующие описания не изменятся.",
+        ):
+            return
+
+        settings.generate_captions = True
+        settings.caption_only = False
+        key = ("selected", "__bulk_caption_generation__")
+        self.v_status.set(f"Подготовка описаний: 0 / {len(missing)}")
+        self._log(f"Пакетная генерация описаний для выбранных без описания: {len(missing)} файлов")
+
+        def work():
+            from PIL import Image, ImageOps
+            services = ModelServices(settings, lambda line: self.event_queue.put(("log", f"[AI] {line}")))
+            generated = 0
+            errors = 0
+            try:
+                services.load_caption_model()
+                for index, row in enumerate(missing, 1):
+                    source = Path(row["path"])
+                    try:
+                        if not source.is_file():
+                            raise FileNotFoundError("Файл больше не существует")
+                        with Image.open(source) as raw:
+                            image = ImageOps.exif_transpose(raw).convert("RGB")
+                        caption = services.caption(image).strip()
+                        prefix = settings.caption_prefix.strip().strip(",;")
+                        if prefix and not caption.casefold().startswith(prefix.casefold()):
+                            caption = f"{prefix}, {caption}".strip().strip(",")
+                        caption_ru = ""
+                        if settings.translate_captions:
+                            try:
+                                caption_ru = catalog.translate_en_ru(caption, settings.translation_email)
+                            except Exception as exc:
+                                self.event_queue.put(("log", f"Перевод не выполнен для {source.name}: {type(exc).__name__}: {exc}"))
+                        catalog.set_descriptions(source, caption, caption_ru)
+                        generated += 1
+                        self.event_queue.put(("log", f"[{index}/{len(missing)}] Описание сохранено: {source.name}"))
+                    except Exception as exc:
+                        errors += 1
+                        self.event_queue.put(("log", f"[{index}/{len(missing)}] Ошибка {source.name}: {type(exc).__name__}: {exc}"))
+                    self.event_queue.put(("review_bulk_caption_progress", index, len(missing)))
+            except Exception as exc:
+                errors += 1
+                self.event_queue.put(("log", f"Пакетная генерация остановлена: {type(exc).__name__}: {exc}"))
+            finally:
+                services.close()
+                self.event_queue.put(("review_bulk_caption_result", generated, errors))
+
+        worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorBulkCaptions")
+        self.review_workers[key] = worker
+        worker.start()
+
+    def _open_selected_keyword_tool(self):
+        """Apply keyword operations to English descriptions in the Selected group."""
+        if self._review_is_busy():
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Массовая обработка ключевых слов")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(True, False)
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Ключевые слова / фраза (несколько — через запятую):").pack(anchor="w")
+        words_var = tk.StringVar()
+        words_entry = ttk.Entry(frame, textvariable=words_var, width=64)
+        words_entry.pack(fill="x", pady=(4, 10))
+        operation_var = tk.StringVar(value="prepend")
+        ttk.Radiobutton(frame, text="Добавить в начало описания", variable=operation_var, value="prepend").pack(anchor="w")
+        ttk.Radiobutton(frame, text="Добавить в конец описания", variable=operation_var, value="append").pack(anchor="w")
+        ttk.Radiobutton(frame, text="Удалить из описания указанные слова/фразы", variable=operation_var, value="remove").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="Изменения применяются ко всем выбранным изображениям с непустым EN-описанием и сразу сохраняются в SQLite.",
+            style="Muted.TLabel", wraplength=520,
+        ).pack(anchor="w", pady=(8, 12))
+
+        def apply():
+            words = [item.strip() for item in words_var.get().split(",") if item.strip()]
+            if not words:
+                messagebox.showwarning(APP_TITLE, "Введите хотя бы одно ключевое слово или фразу.", parent=dialog)
+                return
+            catalog = CatalogStore(base)
+            rows = catalog.list_images("selected")
+            changed = 0
+            for row in rows:
+                source_text = str(row.get("path") or "")
+                original = str(row.get("description_en") or "").strip()
+                if not original:
+                    continue
+                updated = original
+                operation = operation_var.get()
+                if operation == "prepend":
+                    missing_words = [word for word in words if word.casefold() not in original.casefold()]
+                    if missing_words:
+                        updated = ", ".join(missing_words + [original])
+                elif operation == "append":
+                    missing_words = [word for word in words if word.casefold() not in original.casefold()]
+                    if missing_words:
+                        updated = ", ".join([original.rstrip(" ,;"), *missing_words])
+                else:
+                    for word in words:
+                        updated = re.sub(re.escape(word), "", updated, flags=re.IGNORECASE)
+                    updated = re.sub(r"\\s*,\\s*,+", ", ", updated)
+                    updated = re.sub(r"\\s{2,}", " ", updated).strip(" ,;")
+                if updated != original:
+                    catalog.set_descriptions(source_text, updated, str(row.get("description_ru") or ""))
+                    self.review_caption_drafts.pop(source_text, None)
+                    card = self.review_card_widgets.get(("selected", source_text))
+                    if card:
+                        card["caption"].delete("1.0", "end")
+                        card["caption"].insert("1.0", updated)
+                        card["caption_state"].configure(text="Ключевые слова изменены и сохранены")
+                    cached = self.review_record_cache.get("selected", {}).get(source_text)
+                    if cached is not None:
+                        cached["description_en"] = updated
+                    changed += 1
+            self._log(f"Обработка ключевых слов: операция={operation_var.get()}, изменено описаний={changed}")
+            self.v_status.set(f"Ключевые слова: изменено описаний {changed}")
+            dialog.destroy()
+            messagebox.showinfo(APP_TITLE, f"Обновлено описаний: {changed}.", parent=self)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Применить ко всем выбранным", command=apply).pack(side="left")
+        ttk.Button(buttons, text="Отмена", command=dialog.destroy).pack(side="right")
+        words_entry.focus_set()
+
+    def _delete_review_image_file(self, source: Path, group: str):
+        """Permanently delete an original image after explicit confirmation."""
+        if self._review_is_busy():
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        try:
+            resolved_base = base.resolve()
+            resolved_source = source.resolve(strict=True)
+            resolved_source.relative_to(resolved_base)
+        except (OSError, RuntimeError, ValueError):
+            messagebox.showerror(
+                APP_TITLE,
+                "Файл не найден или находится вне текущей исходной папки. Файл не удалён; обновите список.",
+            )
+            return
+        if not resolved_source.is_file() or resolved_source.suffix.lower() not in IMAGE_EXTENSIONS:
+            messagebox.showerror(APP_TITLE, "Удалять можно только существующий файл изображения из текущего каталога.")
+            return
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Физически удалить изображение без возможности восстановления?\\n\\n{resolved_source}",
+            icon="warning",
+        ):
+            return
+        try:
+            resolved_source.unlink()
+            CatalogStore(base).delete_image_record(resolved_source)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Не удалось удалить изображение или запись SQLite:\\n{type(exc).__name__}: {exc}")
+            self._refresh_review_tab(group, reset=True, sync_existing=True)
+            return
+        self.review_caption_drafts.pop(str(source), None)
+        self.review_caption_ru_drafts.pop(str(source), None)
+        self._remove_review_card_from_cache(group, source)
+        self.review_dirty["selected"] = True
+        self.review_dirty["rejected"] = True
+        self._log(f"Физически удалён файл и запись SQLite: {resolved_source}")
+        self.v_status.set(f"Файл удалён: {source.name}")
 
     def _translate_review_caption(
         self,
@@ -2690,6 +2912,20 @@ class DatasetCuratorApp(tk.Tk):
                 self._handle_review_catalog_result(event)
             elif kind == "review_thumbnail_result":
                 self._handle_review_thumbnail_result(event)
+            elif kind == "review_bulk_caption_progress":
+                _, current, total = event
+                self.v_status.set(f"Создание описаний: {current} / {total}")
+            elif kind == "review_bulk_caption_result":
+                _, generated, errors = event
+                self.review_workers.pop(("selected", "__bulk_caption_generation__"), None)
+                self.v_status.set(f"Пакетные описания готовы: {generated}, ошибок: {errors}")
+                self._log(f"Пакетная генерация завершена: создано {generated}, ошибок {errors}")
+                messagebox.showinfo(
+                    APP_TITLE,
+                    f"Создано описаний: {generated}\\nОшибок: {errors}\\n\\nРезультаты сохранены в SQLite.",
+                )
+                self.review_dirty["selected"] = True
+                self._refresh_review_tab("selected", reset=True, sync_existing=False)
             elif kind == "review_translation_result":
                 _, group, path_text, translated, error = event
                 key = (group, path_text)
