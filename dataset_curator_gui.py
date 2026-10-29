@@ -1922,8 +1922,8 @@ class DatasetCuratorApp(tk.Tk):
         move_button.pack(side="left", padx=(6, 0))
         ttk.Button(
             buttons,
-            text="Открыть фото",
-            command=lambda p=source: self._open_path(p),
+            text="Открыть в системном приложении",
+            command=lambda p=source: self._open_in_system_app(p),
         ).pack(side="right")
 
         self.review_card_widgets[(group, str(source))] = {
@@ -2649,14 +2649,28 @@ class DatasetCuratorApp(tk.Tk):
 
     @staticmethod
     def _open_path(path: Path):
+        """Open a file or folder with the operating system's default handler."""
         try:
             if os.name == "nt":
                 os.startfile(str(path))  # type: ignore[attr-defined]
             else:
                 import subprocess
-                subprocess.Popen(["xdg-open", str(path)])
+                opener = "open" if sys.platform == "darwin" else "xdg-open"
+                subprocess.Popen([opener, str(path)])
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось открыть папку:\n{exc}")
+            messagebox.showerror(APP_TITLE, f"Не удалось открыть путь:\n{path}\n\n{exc}")
+
+    def _open_in_system_app(self, source: Path):
+        """Open the original image in the OS-associated image application."""
+        try:
+            source = Path(source).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            messagebox.showerror(APP_TITLE, f"Файл изображения недоступен:\n{source}\n\n{exc}")
+            return
+        if not source.is_file() or source.suffix.lower() not in IMAGE_EXTENSIONS:
+            messagebox.showerror(APP_TITLE, f"Это не поддерживаемый файл изображения:\n{source}")
+            return
+        self._open_path(source)
 
     def _open_report(self):
         base = self._review_input_dir()
