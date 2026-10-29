@@ -2195,7 +2195,7 @@ class DatasetCuratorApp(tk.Tk):
             return
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Физически удалить изображение без возможности восстановления?\n\\n{resolved_source}",
+            f"Физически удалить изображение без возможности восстановления?\n\n{resolved_source}",
             icon="warning",
         ):
             return
@@ -2203,7 +2203,7 @@ class DatasetCuratorApp(tk.Tk):
             resolved_source.unlink()
             CatalogStore(base).delete_image_record(resolved_source)
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось удалить изображение или запись SQLite:\\n{type(exc).__name__}: {exc}")
+            messagebox.showerror(APP_TITLE, f"Не удалось удалить изображение или запись SQLite:\n{type(exc).__name__}: {exc}")
             self._refresh_review_tab(group, reset=True, sync_existing=True)
             return
         self.review_caption_drafts.pop(str(source), None)
@@ -2922,7 +2922,7 @@ class DatasetCuratorApp(tk.Tk):
                 self._log(f"Пакетная генерация завершена: создано {generated}, ошибок {errors}")
                 messagebox.showinfo(
                     APP_TITLE,
-                    f"Создано описаний: {generated}\\nОшибок: {errors}\\n\\nРезультаты сохранены в SQLite.",
+                    f"Создано описаний: {generated}\nОшибок: {errors}\n\nРезультаты сохранены в SQLite.",
                 )
                 self.review_dirty["selected"] = True
                 self._refresh_review_tab("selected", reset=True, sync_existing=False)
