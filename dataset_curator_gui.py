@@ -1073,7 +1073,14 @@ class DatasetCuratorApp(tk.Tk):
         ttk.Label(row, textvariable=self.v_summary).pack(side="right")
 
     def _install_edit_shortcuts(self):
-        """Общие горячие клавиши и контекстное меню для всех текстовых полей."""
+        """Bind shortcuts before Tk's class bindings to prevent duplicate edits.
+
+        A bind_all handler runs after the focused widget's class binding. Generating
+        <<Paste>> from that global handler therefore inserts the clipboard twice.
+        Class-level handlers run in the normal widget binding order and return
+        "break", so each shortcut is dispatched exactly once for all current and
+        dynamically-created text controls.
+        """
         bindings = {
             "<Control-x>": "cut",
             "<Control-c>": "copy",
@@ -1083,12 +1090,16 @@ class DatasetCuratorApp(tk.Tk):
             "<Shift-Insert>": "paste",
             "<Control-Insert>": "copy",
         }
-        for sequence, action in bindings.items():
-            self.bind_all(
-                sequence,
-                lambda event, name=action: self._edit_shortcut(event, name),
-                add="+",
-            )
+        edit_classes = ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox")
+        for class_name in edit_classes:
+            for sequence, action in bindings.items():
+                self.bind_class(
+                    class_name,
+                    sequence,
+                    lambda event, name=action: self._edit_shortcut(event, name),
+                )
+        # Context menu shortcuts remain global because they do not generate edits
+        # until the user explicitly selects a menu command.
         self.bind_all("<Button-3>", self._show_edit_context_menu, add="+")
         self.bind_all("<Control-Button-1>", self._show_edit_context_menu, add="+")
         self.bind_all("<Shift-F10>", self._show_edit_context_menu_keyboard, add="+")
