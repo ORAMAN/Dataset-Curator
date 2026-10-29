@@ -20,6 +20,9 @@ jobs:
       - name: Compile application and catalog
         run: python -m py_compile dataset_curator_gui.py dataset_catalog.py
 
+      - name: Install image metadata dependency for catalog tests
+        run: python -m pip install Pillow
+
       - name: Verify review and caption-only features
         run: |
           python - <<'PY'
@@ -49,7 +52,8 @@ jobs:
               "_append_log_lines", "_handle_export_result",
               "_mark_review_tabs_dirty_and_refresh_active",
               "_make_review_thumbnail", "_queue_review_thumbnail_result",
-              "_handle_review_thumbnail_result",
+              "_handle_review_thumbnail_result", "_add_new_files",
+              "_on_review_sort_changed", "_review_sort_key",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -69,6 +73,9 @@ jobs:
           assert 'name="DatasetCuratorExport"' in source, "Export must run outside the Tkinter event loop"
           assert "ThreadPoolExecutor(" in source, "Review thumbnails must decode outside Tkinter"
           assert "DatasetCuratorThumb" in source
+          assert "Разрешение: больше сначала" in source and "Разрешение: меньше сначала" in source
+          assert "paths_override=paths_override" in source
+          assert "prepare_files_for_processing" in source
           poll_method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == "_poll_queue")
           assert not any(
               isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True
@@ -95,6 +102,9 @@ jobs:
               assert imported == 1, imported
               row = catalog.get_image(photo)
               assert row and row["status"] == "pending", row
+              prepared_existing, skipped_existing = catalog.prepare_files_for_processing([photo])
+              assert prepared_existing == [photo] and skipped_existing == 0
+              assert catalog.get_image(photo)["analysis_complete"] == 0
 
               catalog.upsert_analysis({
                   "status": "selected",
@@ -143,5 +153,33 @@ jobs:
               assert (output / "captions_ru.csv").is_file()
               assert photo.read_bytes() == b"test image data; source file is intentionally opaque"
               assert not photo.with_suffix(".txt").exists()
-          print("SQLite catalog, status changes, bilingual storage and explicit export: OK")
+
+              # Incremental file preparation must not walk the source directory, must
+              # keep newly added rows eligible until analyzed, and sort by total pixels.
+              sort_root = Path(tmp) / "resolution-sort"
+              sort_root.mkdir()
+              low_photo = sort_root / "low.jpg"
+              high_photo = sort_root / "high.jpg"
+              low_photo.write_bytes(b"opaque low-resolution test file")
+              high_photo.write_bytes(b"opaque high-resolution test file")
+              sort_catalog = CatalogStore(sort_root)
+              prepared, skipped = sort_catalog.prepare_files_for_processing([high_photo, low_photo])
+              assert {path.name for path in prepared} == {"low.jpg", "high.jpg"}, prepared
+              assert skipped == 0, skipped
+              assert sort_catalog.get_image(high_photo)["analysis_complete"] == 0
+              sort_catalog.upsert_analysis({
+                  "status": "selected", "width": 512, "height": 512,
+                  "reason": "", "caption": "", "description_ru": "",
+              }, low_photo)
+              sort_catalog.upsert_analysis({
+                  "status": "selected", "width": 2048, "height": 1024,
+                  "reason": "", "caption": "", "description_ru": "",
+              }, high_photo)
+              descending = sort_catalog.list_review_images("selected", sort_by="resolution_desc")
+              ascending = sort_catalog.list_review_images("selected", sort_by="resolution_asc")
+              assert descending[0]["filename"] == "high.jpg", descending
+              assert ascending[0]["filename"] == "low.jpg", ascending
+              prepared_again, skipped_again = sort_catalog.prepare_files_for_processing([low_photo, high_photo])
+              assert prepared_again == [] and skipped_again == 2, (prepared_again, skipped_again)
+          print("SQLite catalog, incremental additions, resolution sorting and explicit export: OK")
           PY
