@@ -880,6 +880,7 @@ class DatasetCuratorApp(tk.Tk):
         )
         self._make_vars()
         self._build_ui()
+        self._install_edit_shortcuts()
         self._apply_theme(self.theme_name, persist=False)
         self._attach_auto_save()
         self.bind("<Configure>", self._on_root_configure, add="+")
@@ -947,6 +948,25 @@ class DatasetCuratorApp(tk.Tk):
     def _build_ui(self):
         style = self.style
         self._configure_theme_styles()
+
+        # Единое меню редактирования доступно во всех вкладках и карточках.
+        menubar = tk.Menu(self)
+        self.edit_menu = tk.Menu(menubar, tearoff=False)
+        self.edit_menu.add_command(label="Вырезать", accelerator="Ctrl+X", command=lambda: self._edit_action("cut"))
+        self.edit_menu.add_command(label="Копировать", accelerator="Ctrl+C", command=lambda: self._edit_action("copy"))
+        self.edit_menu.add_command(label="Вставить", accelerator="Ctrl+V", command=lambda: self._edit_action("paste"))
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(label="Выделить всё", accelerator="Ctrl+A", command=lambda: self._edit_action("select_all"))
+        menubar.add_cascade(label="Правка", menu=self.edit_menu)
+        self.configure(menu=menubar)
+
+        self.edit_context_menu = tk.Menu(self, tearoff=False)
+        self.edit_context_menu.add_command(label="Вырезать", command=lambda: self._edit_action("cut", self._edit_context_target))
+        self.edit_context_menu.add_command(label="Копировать", command=lambda: self._edit_action("copy", self._edit_context_target))
+        self.edit_context_menu.add_command(label="Вставить", command=lambda: self._edit_action("paste", self._edit_context_target))
+        self.edit_context_menu.add_separator()
+        self.edit_context_menu.add_command(label="Выделить всё", command=lambda: self._edit_action("select_all", self._edit_context_target))
+        self._edit_context_target = None
 
         top = ttk.Frame(self, padding=(12, 10, 12, 6))
         top.pack(fill="x")
@@ -1027,6 +1047,96 @@ class DatasetCuratorApp(tk.Tk):
         row.pack(fill="x")
         ttk.Label(row, textvariable=self.v_progress).pack(side="left")
         ttk.Label(row, textvariable=self.v_summary).pack(side="right")
+
+    def _install_edit_shortcuts(self):
+        """Общие горячие клавиши и контекстное меню для всех текстовых полей."""
+        bindings = {
+            "<Control-x>": "cut",
+            "<Control-c>": "copy",
+            "<Control-v>": "paste",
+            "<Control-a>": "select_all",
+            "<Shift-Delete>": "cut",
+            "<Shift-Insert>": "paste",
+            "<Control-Insert>": "copy",
+        }
+        for sequence, action in bindings.items():
+            self.bind_all(
+                sequence,
+                lambda event, name=action: self._edit_shortcut(event, name),
+                add="+",
+            )
+        self.bind_all("<Button-3>", self._show_edit_context_menu, add="+")
+        self.bind_all("<Control-Button-1>", self._show_edit_context_menu, add="+")
+        self.bind_all("<Shift-F10>", self._show_edit_context_menu_keyboard, add="+")
+
+    @staticmethod
+    def _is_text_edit_widget(widget) -> bool:
+        try:
+            return widget.winfo_class() in {
+                "Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox",
+            }
+        except (tk.TclError, AttributeError):
+            return False
+
+    def _edit_action(self, action: str, widget=None):
+        """Запускает стандартные Tk virtual events для cut/copy/paste и выделения."""
+        target = widget or self.focus_get()
+        if target is None or not self._is_text_edit_widget(target):
+            return None
+        try:
+            state = str(target.cget("state"))
+            if action in {"cut", "paste"} and state in {"disabled", "readonly"}:
+                return "break"
+            if action == "select_all":
+                if target.winfo_class() == "Text":
+                    target.tag_add("sel", "1.0", "end-1c")
+                    target.mark_set("insert", "end-1c")
+                else:
+                    target.selection_range(0, "end")
+                    target.icursor("end")
+            else:
+                virtual_event = {"cut": "<<Cut>>", "copy": "<<Copy>>", "paste": "<<Paste>>"}.get(action)
+                if virtual_event:
+                    target.event_generate(virtual_event)
+            return "break"
+        except (tk.TclError, AttributeError):
+            return "break"
+
+    def _edit_shortcut(self, event, action: str):
+        return self._edit_action(action, getattr(event, "widget", None))
+
+    def _popup_edit_context_menu(self, widget, x_root: int, y_root: int):
+        if not self._is_text_edit_widget(widget):
+            return None
+        self._edit_context_target = widget
+        try:
+            state = str(widget.cget("state"))
+        except (tk.TclError, AttributeError):
+            state = "normal"
+        self.edit_context_menu.entryconfigure(0, state="disabled" if state in {"disabled", "readonly"} else "normal")
+        self.edit_context_menu.entryconfigure(1, state="normal")
+        self.edit_context_menu.entryconfigure(2, state="disabled" if state in {"disabled", "readonly"} else "normal")
+        try:
+            widget.focus_set()
+            self.edit_context_menu.tk_popup(x_root, y_root)
+        finally:
+            try:
+                self.edit_context_menu.grab_release()
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _show_edit_context_menu(self, event):
+        return self._popup_edit_context_menu(event.widget, event.x_root, event.y_root)
+
+    def _show_edit_context_menu_keyboard(self, event):
+        widget = event.widget
+        try:
+            x_root = widget.winfo_rootx() + min(24, max(8, widget.winfo_width() // 4))
+            y_root = widget.winfo_rooty() + min(24, max(8, widget.winfo_height() // 2))
+        except (tk.TclError, AttributeError):
+            return None
+        return self._popup_edit_context_menu(widget, x_root, y_root)
 
     def _build_filters_tab(self):
         tab = self.tab_filters
@@ -2052,6 +2162,9 @@ class DatasetCuratorApp(tk.Tk):
         settings.generate_captions = True
         settings.caption_only = False
         key = ("selected", "__bulk_caption_generation__")
+        self.progress.configure(maximum=max(len(missing), 1), value=0)
+        self.v_progress.set(f"Подписей обработано: 0 / {len(missing)}")
+        self.v_summary.set("Создано подписей: 0 · ошибок: 0")
         self.v_status.set(f"Подготовка описаний: 0 / {len(missing)}")
         self._log(f"Пакетная генерация описаний для выбранных без описания: {len(missing)} файлов")
 
@@ -2060,6 +2173,7 @@ class DatasetCuratorApp(tk.Tk):
             services = ModelServices(settings, lambda line: self.event_queue.put(("log", f"[AI] {line}")))
             generated = 0
             errors = 0
+            attempted = 0
             try:
                 services.load_caption_model()
                 for index, row in enumerate(missing, 1):
@@ -2085,13 +2199,14 @@ class DatasetCuratorApp(tk.Tk):
                     except Exception as exc:
                         errors += 1
                         self.event_queue.put(("log", f"[{index}/{len(missing)}] Ошибка {source.name}: {type(exc).__name__}: {exc}"))
-                    self.event_queue.put(("review_bulk_caption_progress", index, len(missing)))
+                    attempted = index
+                    self.event_queue.put(("review_bulk_caption_progress", index, len(missing), generated, errors))
             except Exception as exc:
                 errors += 1
                 self.event_queue.put(("log", f"Пакетная генерация остановлена: {type(exc).__name__}: {exc}"))
             finally:
                 services.close()
-                self.event_queue.put(("review_bulk_caption_result", generated, errors))
+                self.event_queue.put(("review_bulk_caption_result", generated, errors, attempted, len(missing)))
 
         worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorBulkCaptions")
         self.review_workers[key] = worker
@@ -2918,11 +3033,17 @@ class DatasetCuratorApp(tk.Tk):
             elif kind == "review_thumbnail_result":
                 self._handle_review_thumbnail_result(event)
             elif kind == "review_bulk_caption_progress":
-                _, current, total = event
+                _, current, total, generated, errors = event
+                self.progress.configure(maximum=max(total, 1), value=current)
+                self.v_progress.set(f"Подписей обработано: {current} / {total}")
+                self.v_summary.set(f"Создано подписей: {generated} · ошибок: {errors}")
                 self.v_status.set(f"Создание описаний: {current} / {total}")
             elif kind == "review_bulk_caption_result":
-                _, generated, errors = event
+                _, generated, errors, attempted, total = event
                 self.review_workers.pop(("selected", "__bulk_caption_generation__"), None)
+                self.progress.configure(maximum=max(total, 1), value=min(attempted, total))
+                self.v_progress.set(f"Подписей обработано: {attempted} / {total}")
+                self.v_summary.set(f"Создано подписей: {generated} · ошибок: {errors}")
                 self.v_status.set(f"Пакетные описания готовы: {generated}, ошибок: {errors}")
                 self._log(f"Пакетная генерация завершена: создано {generated}, ошибок {errors}")
                 messagebox.showinfo(
