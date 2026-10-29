@@ -104,6 +104,7 @@ def get_blur_variance(image_rgb) -> float:
 @dataclass
 class Settings:
     input_dir: str
+    recursive_scan: bool = False
     clean_outputs: bool = False
     check_resolution: bool = True
     min_resolution: int = 1024
@@ -706,12 +707,14 @@ class DatasetProcessor:
         # Синхронизируем только записи каталога. Исходные фото остаются на местах;
         # существующие старые папки selected/rejected импортируются в БД без изменений.
         imported = self.catalog.sync_existing_files()
-        paths = sorted(p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
+        scan_root = input_dir.rglob("*") if self.settings.recursive_scan else input_dir.iterdir()
+        paths = sorted(p for p in scan_root if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS)
         if not paths:
             # В базе могут остаться ранее импортированные фото только из папок результата.
             if not self.catalog.list_images("selected") and not self.catalog.list_images("rejected"):
                 raise FileNotFoundError("В выбранной папке и каталоге SQLite не найдено изображений.")
-        self.log(f"Найдено изображений в корне папки: {len(paths)}")
+        scan_scope = "в папке и всех подпапках" if self.settings.recursive_scan else "непосредственно в выбранной папке"
+        self.log(f"Найдено изображений {scan_scope}: {len(paths)}")
         self.log(f"SQLite: {self.catalog.db_path}")
         if imported:
             self.log(f"Добавлено в каталог записей о существующих изображениях: {imported}")
@@ -906,6 +909,7 @@ class DatasetCuratorApp(tk.Tk):
         merged = {**defaults, **c}
         self.v = {
             "input_dir": tk.StringVar(value=merged.get("input_dir", "")),
+            "recursive_scan": tk.BooleanVar(value=merged.get("recursive_scan", False)),
             "clean_outputs": tk.BooleanVar(value=merged.get("clean_outputs", False)),
             "check_resolution": tk.BooleanVar(value=merged.get("check_resolution", True)),
             "min_resolution": tk.StringVar(value=str(merged.get("min_resolution", 1024))),
@@ -957,10 +961,17 @@ class DatasetCuratorApp(tk.Tk):
 
         folder_frame = ttk.LabelFrame(self, text="Исходная папка", padding=8)
         folder_frame.pack(fill="x", padx=12, pady=(0, 8))
-        folder_entry = ttk.Entry(folder_frame, textvariable=self.v["input_dir"])
+        folder_row = ttk.Frame(folder_frame)
+        folder_row.pack(fill="x")
+        folder_entry = ttk.Entry(folder_row, textvariable=self.v["input_dir"])
         folder_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(folder_frame, text="Обзор…", command=self._browse_folder).pack(side="left")
-        ttk.Button(folder_frame, text="Обновить каталог", command=self._refresh_all_review_tabs).pack(side="left", padx=(8, 0))
+        ttk.Button(folder_row, text="Обзор…", command=self._browse_folder).pack(side="left")
+        ttk.Button(folder_row, text="Обновить каталог", command=self._refresh_all_review_tabs).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            folder_frame,
+            text="Сканировать все подпапки",
+            variable=self.v["recursive_scan"],
+        ).pack(anchor="w", pady=(6, 0))
 
         # Основные действия размещены над вкладками, чтобы кнопка запуска
         # не терялась внизу окна на экранах с небольшим разрешением.
@@ -2307,6 +2318,7 @@ class DatasetCuratorApp(tk.Tk):
         caption_only = self.v["caption_only"].get()
         return Settings(
             input_dir=str(Path(input_dir).expanduser().resolve()),
+            recursive_scan=self.v["recursive_scan"].get(),
             clean_outputs=self.v["clean_outputs"].get(),
             check_resolution=self.v["check_resolution"].get(), min_resolution=min_resolution,
             resolution_mode=self.v["resolution_mode"].get(), check_faces=self.v["check_faces"].get(),
