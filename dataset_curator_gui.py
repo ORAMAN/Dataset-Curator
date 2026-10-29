@@ -1298,10 +1298,23 @@ class DatasetCuratorApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
 
         ttk.Label(toolbar, textvariable=self._make_review_count_var(group), style="Header.TLabel").pack(side="left")
-        saved_sort = self.config_data.get(f"review_sort_{group}", self.config_data.get("review_sort", "Имя файла"))
-        sort_values = ("Имя файла", "Разрешение: больше сначала", "Разрешение: меньше сначала")
+        saved_sort = self.config_data.get(
+            f"review_sort_{group}",
+            self.config_data.get("review_sort", "Имя файла: А → Я"),
+        )
+        sort_values = (
+            "Имя файла: А → Я",
+            "Имя файла: Я → А",
+            "Дата изменения: новые сначала",
+            "Дата изменения: старые сначала",
+            "Разрешение: больше сначала",
+            "Разрешение: меньше сначала",
+        )
+        # Settings from earlier versions used "Имя файла" as the default label.
+        if saved_sort == "Имя файла":
+            saved_sort = "Имя файла: А → Я"
         if saved_sort not in sort_values:
-            saved_sort = "Имя файла"
+            saved_sort = "Имя файла: А → Я"
         sort_var = tk.StringVar(value=saved_sort)
         self.review_sort_vars[group] = sort_var
         ttk.Label(toolbar, text="Сортировка:", style="Muted.TLabel").pack(side="left", padx=(12, 4))
@@ -1310,7 +1323,7 @@ class DatasetCuratorApp(tk.Tk):
             textvariable=sort_var,
             values=sort_values,
             state="readonly",
-            width=25,
+            width=31,
         )
         sort_combo.pack(side="left", padx=(0, 8))
         sort_combo.bind(
@@ -1458,12 +1471,23 @@ class DatasetCuratorApp(tk.Tk):
             height = int(row.get("height") or 0)
         except (TypeError, ValueError, OverflowError):
             width = height = 0
-        missing = width <= 0 or height <= 0
+        missing_resolution = width <= 0 or height <= 0
         pixels = width * height
+
+        try:
+            file_mtime = float(row.get("file_mtime"))
+        except (TypeError, ValueError, OverflowError):
+            file_mtime = None
+        missing_date = file_mtime is None
+
+        if mode == "Дата изменения: новые сначала":
+            return (missing_date, -(file_mtime or 0.0), filename, path_text)
+        if mode == "Дата изменения: старые сначала":
+            return (missing_date, file_mtime or 0.0, filename, path_text)
         if mode == "Разрешение: больше сначала":
-            return (missing, -pixels, -width, -height, filename, path_text)
+            return (missing_resolution, -pixels, -width, -height, filename, path_text)
         if mode == "Разрешение: меньше сначала":
-            return (missing, pixels, width, height, filename, path_text)
+            return (missing_resolution, pixels, width, height, filename, path_text)
         return (filename, path_text)
 
     def _on_review_sort_changed(self, group: str):
@@ -1555,7 +1579,15 @@ class DatasetCuratorApp(tk.Tk):
                 if sync_existing:
                     added = catalog.sync_existing_files()
                 for group_name in groups:
-                    rows_by_group[group_name] = catalog.list_review_images(group_name)
+                    rows = catalog.list_review_images(group_name)
+                    # File timestamps are gathered in this background thread, not in
+                    # Tk's UI thread. This keeps sorting responsive for large datasets.
+                    for row in rows:
+                        try:
+                            row["file_mtime"] = Path(str(row.get("path") or "")).stat().st_mtime
+                        except (OSError, RuntimeError, ValueError):
+                            row["file_mtime"] = None
+                    rows_by_group[group_name] = rows
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             self.event_queue.put((
@@ -1600,8 +1632,12 @@ class DatasetCuratorApp(tk.Tk):
     def _apply_review_rows(self, group: str, rows: list[dict[str, Any]], base_text: str):
         """Обновляет только запрошенную вкладку, затем создаёт карточки небольшими порциями."""
         sort_var = self.review_sort_vars.get(group)
-        mode = sort_var.get() if sort_var is not None else "Имя файла"
-        rows = sorted(rows, key=lambda row: self._review_sort_key(row, mode))
+        mode = sort_var.get() if sort_var is not None else "Имя файла: А → Я"
+        rows = sorted(
+            rows,
+            key=lambda row: self._review_sort_key(row, mode),
+            reverse=(mode == "Имя файла: Я → А"),
+        )
         for key in [key for key in self.review_card_widgets if key[0] == group]:
             self.review_card_widgets.pop(key, None)
         list_frame = self.review_list_frames[group]
