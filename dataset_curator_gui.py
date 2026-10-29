@@ -1606,13 +1606,12 @@ class DatasetCuratorApp(tk.Tk):
         image_label.bind(
             "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
         )
-        if group == "selected":
-            ttk.Button(
-                preview_frame,
-                text="✖ Удалить файл",
-                style="Danger.TButton",
-                command=lambda p=source, g=group: self._delete_review_image_file(p, g),
-            ).pack(side="bottom", fill="x", pady=(4, 0))
+        ttk.Button(
+            preview_frame,
+            text="✖ Удалить файл",
+            style="Danger.TButton",
+            command=lambda p=source, g=group: self._delete_review_image_file(p, g),
+        ).pack(side="bottom", fill="x", pady=(4, 0))
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
