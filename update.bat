@@ -219,12 +219,27 @@ echo Настройки dataset_curator_settings.json, hf_token.txt, модел�
 echo и папки датасета не удалялись. ZIP-обновление не удаляет устаревшие файлы.
 echo.
 set "RUN_DEPS="
-set /p "RUN_DEPS=Обновить Python-зависимости из requirements.txt сейчас? [y/N]: "
+set /p "RUN_DEPS=Обновить Python-зависимости сейчас? [y/N]: "
 if /I "!RUN_DEPS!"=="Y" (
     set "PYTHON=C:\Program Files\Python\python.exe"
     if not exist "!PYTHON!" set "PYTHON=python"
     REM Use the same interpreter as start_dataset_curator.bat; do not let uv select another Python.
-    "!PYTHON!" -m pip install -r "%PROJECT_ROOT%\requirements.txt"
+
+    REM Prefer requirements.txt; support repositories that contain only the app-specific list.
+    set "REQUIREMENTS_FILE="
+    if exist "%PROJECT_ROOT%\requirements.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements.txt"
+    if not defined REQUIREMENTS_FILE if exist "%PROJECT_ROOT%\requirements_dataset_curator.txt" set "REQUIREMENTS_FILE=%PROJECT_ROOT%\requirements_dataset_curator.txt"
+    if not defined REQUIREMENTS_FILE (
+        echo [ERROR] Не найден файл зависимостей.
+        echo Ожидался один из файлов:
+        echo   %PROJECT_ROOT%\requirements.txt
+        echo   %PROJECT_ROOT%\requirements_dataset_curator.txt
+        echo Репозиторий обновлён, но зависимости установить не удалось.
+        goto :error
+    )
+
+    echo [INFO] Файл зависимостей: !REQUIREMENTS_FILE!
+    "!PYTHON!" -m pip install -r "!REQUIREMENTS_FILE!"
     if errorlevel 1 (
         echo [ERROR] Установка зависимостей завершилась с ошибкой.
         goto :error
