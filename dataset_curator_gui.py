@@ -1578,7 +1578,9 @@ class DatasetCuratorApp(tk.Tk):
         record = self.review_record_cache.get(group, {}).get(str(source)) or {}
         thumbnail = None
 
-        preview_frame = ttk.Frame(card, width=166, height=184)
+        # Reserve enough vertical space for thumbnail, dimensions and delete button.
+        # The fixed frame keeps portrait and landscape cards aligned identically.
+        preview_frame = ttk.Frame(card, width=166, height=220)
         preview_frame.pack(side="left", fill="y", padx=(0, 10))
         preview_frame.pack_propagate(False)
 
@@ -1599,6 +1601,16 @@ class DatasetCuratorApp(tk.Tk):
         )
         size_label.pack(side="bottom", fill="x", pady=(4, 0))
 
+        # Pack the fixed-height button before the expanding thumbnail. Otherwise
+        # Tkinter may let the thumbnail consume its parcel on some aspect ratios.
+        delete_button = ttk.Button(
+            preview_frame,
+            text="✖ Удалить файл",
+            style="Danger.TButton",
+            command=lambda p=source, g=group: self._delete_review_image_file(p, g),
+        )
+        delete_button.pack(side="bottom", fill="x", pady=(4, 0))
+
         image_label = ttk.Label(
             preview_frame, text="Загрузка миниатюры…", anchor="center", cursor="hand2"
         )
@@ -1606,12 +1618,6 @@ class DatasetCuratorApp(tk.Tk):
         image_label.bind(
             "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
         )
-        ttk.Button(
-            preview_frame,
-            text="✖ Удалить файл",
-            style="Danger.TButton",
-            command=lambda p=source, g=group: self._delete_review_image_file(p, g),
-        ).pack(side="bottom", fill="x", pady=(4, 0))
 
         content = ttk.Frame(card)
         content.pack(side="left", fill="both", expand=True)
