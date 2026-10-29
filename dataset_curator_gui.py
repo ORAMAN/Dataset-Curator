@@ -1588,7 +1588,8 @@ class DatasetCuratorApp(tk.Tk):
 
     def _apply_review_rows(self, group: str, rows: list[dict[str, Any]], base_text: str):
         """Обновляет только запрошенную вкладку, затем создаёт карточки небольшими порциями."""
-        mode = self.review_sort_vars.get(group, tk.StringVar(value="Имя файла")).get()
+        sort_var = self.review_sort_vars.get(group)
+        mode = sort_var.get() if sort_var is not None else "Имя файла"
         rows = sorted(rows, key=lambda row: self._review_sort_key(row, mode))
         for key in [key for key in self.review_card_widgets if key[0] == group]:
             self.review_card_widgets.pop(key, None)
