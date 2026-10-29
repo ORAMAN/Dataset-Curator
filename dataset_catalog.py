@@ -275,6 +275,12 @@ class CatalogStore:
                     status=excluded.status, reason=excluded.reason, updated_at=CURRENT_TIMESTAMP
             """, (normalized, Path(normalized).name, status, reason))
 
+    def delete_image_record(self, path: str | Path) -> None:
+        """Remove only the SQLite record; physical-file deletion is handled by the GUI."""
+        normalized = self._normalize_path(path)
+        with self._connect() as connection:
+            connection.execute("DELETE FROM images WHERE path=?", (normalized,))
+
     def set_descriptions(self, path: str | Path, description_en: str, description_ru: str) -> None:
         normalized = self._normalize_path(path)
         with self._connect() as connection:
