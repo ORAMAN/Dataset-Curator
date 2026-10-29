@@ -2039,7 +2039,7 @@ class DatasetCuratorApp(tk.Tk):
             return
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Создать описания для {len(missing)} выбранных изображений без английского описания?\\n"
+            f"Создать описания для {len(missing)} выбранных изображений без английского описания?\n"
             "Результаты будут сохранены в SQLite; существующие описания не изменятся.",
         ):
             return
@@ -2148,8 +2148,8 @@ class DatasetCuratorApp(tk.Tk):
                 else:
                     for word in words:
                         updated = re.sub(re.escape(word), "", updated, flags=re.IGNORECASE)
-                    updated = re.sub(r"\\s*,\\s*,+", ", ", updated)
-                    updated = re.sub(r"\\s{2,}", " ", updated).strip(" ,;")
+                    updated = re.sub(r"\s*,\s*,+", ", ", updated)
+                    updated = re.sub(r"\s{2,}", " ", updated).strip(" ,;")
                 if updated != original:
                     catalog.set_descriptions(source_text, updated, str(row.get("description_ru") or ""))
                     self.review_caption_drafts.pop(source_text, None)
@@ -2195,7 +2195,7 @@ class DatasetCuratorApp(tk.Tk):
             return
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Физически удалить изображение без возможности восстановления?\\n\\n{resolved_source}",
+            f"Физически удалить изображение без возможности восстановления?\n\\n{resolved_source}",
             icon="warning",
         ):
             return
