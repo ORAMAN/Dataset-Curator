@@ -66,6 +66,7 @@ class CatalogStore:
                     description_en TEXT NOT NULL DEFAULT '',
                     description_ru TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
+                    analysis_complete INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
@@ -100,6 +101,16 @@ class CatalogStore:
             for name, declaration in required.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE images ADD COLUMN {name} {declaration}")
+            if "analysis_complete" not in columns:
+                connection.execute(
+                    "ALTER TABLE images ADD COLUMN analysis_complete INTEGER NOT NULL DEFAULT 0"
+                )
+                # Preserve legacy processed records; old imported pending rows without
+                # dimensions remain eligible for explicit incremental processing.
+                connection.execute(
+                    "UPDATE images SET analysis_complete=1 "
+                    "WHERE status <> 'pending' OR width IS NOT NULL OR height IS NOT NULL"
+                )
 
     @staticmethod
     def _normalize_path(path: str | Path) -> str:
@@ -151,6 +162,92 @@ class CatalogStore:
                 added += max(cursor.rowcount, 0)
         return added
 
+    def prepare_files_for_processing(
+        self, paths: list[str | Path]
+    ) -> tuple[list[Path], int]:
+        """Register explicitly chosen files and return only files not yet analyzed.
+
+        Unlike sync_existing_files(), this method never walks any directory.
+        """
+        from PIL import Image
+
+        prepared: list[Path] = []
+        skipped = 0
+        with self._connect() as connection:
+            for raw_path in paths:
+                path = Path(raw_path).expanduser().resolve()
+                try:
+                    path.relative_to(self.source_dir)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Файл должен находиться внутри исходной папки датасета: {path}"
+                    ) from exc
+                if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                    skipped += 1
+                    continue
+
+                normalized = self._normalize_path(path)
+                row = connection.execute(
+                    "SELECT status, analysis_complete FROM images WHERE path=?",
+                    (normalized,),
+                ).fetchone()
+                if row is not None:
+                    if row["status"] == "pending" and not bool(row["analysis_complete"]):
+                        try:
+                            with Image.open(path) as image:
+                                width, height = image.size
+                            connection.execute(
+                                "UPDATE images SET width=COALESCE(width, ?), "
+                                "height=COALESCE(height, ?) WHERE path=?",
+                                (int(width), int(height), normalized),
+                            )
+                        except Exception:
+                            pass
+                        prepared.append(path)
+                    else:
+                        skipped += 1
+                    continue
+
+                width = height = None
+                try:
+                    with Image.open(path) as image:
+                        width, height = int(image.size[0]), int(image.size[1])
+                except Exception:
+                    # Keep unreadable files in the catalog so normal processing can
+                    # record a per-file error instead of aborting the batch.
+                    pass
+
+                description_en = ""
+                try:
+                    sidecar = path.with_suffix(".txt")
+                    if sidecar.is_file():
+                        description_en = sidecar.read_text(encoding="utf-8-sig").strip()
+                except (OSError, UnicodeError):
+                    pass
+
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO images
+                        (path, filename, status, width, height, description_en, analysis_complete)
+                    VALUES (?, ?, 'pending', ?, ?, ?, 0)
+                    """,
+                    (normalized, path.name, width, height, description_en),
+                )
+                if cursor.rowcount > 0:
+                    prepared.append(path)
+                else:
+                    existing = connection.execute(
+                        "SELECT status, analysis_complete FROM images WHERE path=?",
+                        (normalized,),
+                    ).fetchone()
+                    if existing and existing["status"] == "pending" and not bool(existing["analysis_complete"]):
+                        prepared.append(path)
+                    else:
+                        skipped += 1
+
+        prepared.sort(key=lambda item: str(item).casefold())
+        return prepared, skipped
+
     def upsert_analysis(self, record: dict[str, Any], source_path: str | Path) -> None:
         """Persist one analysis result, preserving existing descriptions when no new caption exists."""
         path = self._normalize_path(source_path)
@@ -176,8 +273,9 @@ class CatalogStore:
                 INSERT INTO images (
                     path, filename, status, reason, width, height, aesthetic_score,
                     suitable_faces, max_face_height_percent, blur_variance,
-                    clip_category, clip_relative_score, description_en, description_ru, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    clip_category, clip_relative_score, description_en, description_ru, error,
+                    analysis_complete
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(path) DO UPDATE SET
                     filename=excluded.filename,
                     status=excluded.status,
@@ -196,6 +294,7 @@ class CatalogStore:
                         ELSE images.description_ru
                     END,
                     error=excluded.error,
+                    analysis_complete=1,
                     updated_at=CURRENT_TIMESTAMP
             """, values)
 
