@@ -465,7 +465,8 @@ class CatalogStore:
         config = dict(provider_config or {})
         from translation.translation_service import get_translation_provider, translate_prompt
 
-        if get_translation_provider(provider) is None:
+        legacy_email_api = get_translation_provider(provider) is None
+        if legacy_email_api:
             # Backward compatibility with the previous translate_en_ru(text, email) API.
             config.setdefault("email", str(provider or ""))
             provider = "myMemory_free"
@@ -495,7 +496,11 @@ class CatalogStore:
         if row and str(row["translated_text"]).strip():
             return str(row["translated_text"])
 
-        translated = translate_prompt(source_text, provider, config)
+        if legacy_email_api:
+            # Keep the old injectable MyMemory function for existing integrations and tests.
+            translated = translate_en_ru_mymemory(source_text, str(config.get("email") or ""))
+        else:
+            translated = translate_prompt(source_text, provider, config)
         with self._connect() as connection:
             connection.execute(
                 """
