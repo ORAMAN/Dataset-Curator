@@ -1674,6 +1674,8 @@ class DatasetCuratorApp(tk.Tk):
         ):
             return
 
+        scroll_anchor = self._capture_review_scroll_anchor(group)
+
         try:
             catalog = CatalogStore(base)
         except Exception as exc:
@@ -1706,6 +1708,10 @@ class DatasetCuratorApp(tk.Tk):
             f"ошибок={len(failures)}, предупреждений={len(warnings)}"
         )
         self.v_status.set(f"Групповое удаление: удалено изображений {len(deleted_sources)}")
+        if deleted_sources:
+            self.after_idle(
+                lambda g=group, a=scroll_anchor: self._restore_review_scroll_anchor(g, a)
+            )
         details = []
         if failures:
             details.append("Не удалось удалить:\n" + "\n".join(failures[:15]))
@@ -2087,6 +2093,120 @@ class DatasetCuratorApp(tk.Tk):
                     state="disabled",
                     text="Все изображения показаны" if total else "Нет изображений",
                 )
+
+    def _capture_review_scroll_anchor(self, group: str) -> dict[str, Any] | None:
+        """Запоминает верхнюю видимую карточку и её смещение относительно viewport."""
+        canvas = self.review_canvases.get(group)
+        if canvas is None:
+            return None
+        try:
+            canvas.update_idletasks()
+            viewport_top = float(canvas.canvasy(0))
+            viewport_bottom = float(canvas.canvasy(canvas.winfo_height()))
+            visible_cards = []
+            for (card_group, path_text), card in self.review_card_widgets.items():
+                if card_group != group:
+                    continue
+                frame = card.get("frame")
+                if frame is None or not frame.winfo_exists():
+                    continue
+                card_top = float(frame.winfo_y())
+                card_bottom = card_top + float(frame.winfo_height())
+                if card_bottom > viewport_top and card_top < viewport_bottom:
+                    visible_cards.append((card_top, path_text))
+
+            if not visible_cards:
+                return None
+
+            anchor_top, anchor_path = min(visible_cards, key=lambda item: item[0])
+            paths = [str(path) for path in self.review_file_cache.get(group, [])]
+            try:
+                anchor_index = paths.index(anchor_path)
+            except ValueError:
+                anchor_index = -1
+            return {
+                "path": anchor_path,
+                "offset": anchor_top - viewport_top,
+                "paths": paths,
+                "index": anchor_index,
+            }
+        except (tk.TclError, TypeError, ValueError):
+            return None
+
+    def _restore_review_scroll_anchor(
+        self,
+        group: str,
+        anchor: dict[str, Any] | None,
+        attempts_left: int = 40,
+    ):
+        """Возвращает верх списка к прежней карточке (или ближайшей сохранившейся)."""
+        if not anchor or group not in ("selected", "rejected"):
+            return
+        canvas = self.review_canvases.get(group)
+        if canvas is None:
+            return
+
+        files = [str(path) for path in self.review_file_cache.get(group, [])]
+        if not files:
+            return
+
+        target_path = str(anchor.get("path") or "")
+        if target_path not in files:
+            original_paths = anchor.get("paths") or []
+            original_index = anchor.get("index", -1)
+            try:
+                original_index = int(original_index)
+            except (TypeError, ValueError):
+                original_index = -1
+
+            # Если верхняя карточка была удалена, выбираем ближайшую следующую,
+            # а когда её нет — предыдущую сохранившуюся карточку.
+            candidates = []
+            if 0 <= original_index < len(original_paths):
+                candidates.extend(original_paths[original_index + 1:])
+                candidates.extend(reversed(original_paths[:original_index]))
+            target_path = next((path for path in candidates if path in files), "")
+
+        if not target_path:
+            return
+
+        card = self.review_card_widgets.get((group, target_path))
+        if card is None:
+            target_index = files.index(target_path)
+            self.review_render_target[group] = max(
+                self.review_render_target.get(group, 0),
+                target_index + 1,
+            )
+            if not self.review_rendering.get(group, False):
+                self.review_render_generation[group] += 1
+                generation = self.review_render_generation[group]
+                self.review_rendering[group] = True
+                self._render_review_batch(group, generation)
+
+            if attempts_left > 0:
+                self.after(
+                    20,
+                    lambda g=group, a=anchor, n=attempts_left - 1:
+                        self._restore_review_scroll_anchor(g, a, n),
+                )
+            return
+
+        frame = card.get("frame")
+        try:
+            if frame is None or not frame.winfo_exists() or not canvas.winfo_exists():
+                return
+            canvas.update_idletasks()
+            bbox = canvas.bbox("all")
+            if not bbox:
+                return
+            scroll_height = max(1.0, float(bbox[3] - bbox[1]))
+            viewport_height = float(canvas.winfo_height())
+            offset = float(anchor.get("offset", 0.0))
+            target_top = float(frame.winfo_y()) - offset
+            target_top = max(0.0, min(target_top, max(0.0, scroll_height - viewport_height)))
+            canvas.yview_moveto(target_top / scroll_height)
+        except (tk.TclError, TypeError, ValueError):
+            return
 
     def _remove_review_card_from_cache(self, group: str, source: Path):
         """Удаляет одну карточку из текущей вкладки без пересоздания остальных."""
@@ -3073,6 +3193,7 @@ class DatasetCuratorApp(tk.Tk):
             icon="warning",
         ):
             return
+        scroll_anchor = self._capture_review_scroll_anchor(group)
         try:
             deleted_files, warnings = self._delete_review_image_and_sidecars(source, base)
         except Exception as exc:
@@ -3090,6 +3211,9 @@ class DatasetCuratorApp(tk.Tk):
         self.review_dirty["rejected"] = True
         self._log(f"Физически удалены файлы: {', '.join(str(path) for path in deleted_files)}")
         self.v_status.set(f"Файл удалён: {source.name}")
+        self.after_idle(
+            lambda g=group, a=scroll_anchor: self._restore_review_scroll_anchor(g, a)
+        )
         if warnings:
             messagebox.showwarning(APP_TITLE, "Изображение удалено.\n\n" + "\n".join(warnings))
 
