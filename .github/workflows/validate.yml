@@ -183,3 +183,7 @@ jobs:
               assert prepared_again == [] and skipped_again == 2, (prepared_again, skipped_again)
           print("SQLite catalog, incremental additions, resolution sorting and explicit export: OK")
           PY
+      - name: Compile and test translation providers
+        run: |
+          python -m compileall -q translation
+          python -m unittest tests.test_translation_providers -v
