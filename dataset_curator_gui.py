@@ -101,6 +101,15 @@ def get_blur_variance(image_rgb) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
+def append_clip_category(caption: str, category: str, enabled: bool = True) -> str:
+    """Append a CLIP category once, preserving the prompt's comma-separated format."""
+    caption = (caption or "").strip()
+    category = (category or "").strip()
+    if not enabled or not category or category.casefold() in caption.casefold():
+        return caption
+    return f"{caption.rstrip(' .,;')} , {category}".replace(" ,", ",")
+
+
 
 
 @dataclass
@@ -591,7 +600,9 @@ class DatasetProcessor:
                     self.log(f"  ! ошибка CLIP: {exc}")
                     record["error"] = f"CLIP: {exc}"
 
-            if self.settings.generate_captions:
+            if self.settings.generate_captions and self.settings.classify_clip and not clip_category:
+                self.log("  ! Подпись BLIP не создана: CLIP не вернул категорию, включённая классификация обязательна.")
+            elif self.settings.generate_captions:
                 previous_description = self.catalog.get_image(source) or {}
                 if self.settings.skip_existing_captions and str(previous_description.get("description_en") or "").strip():
                     self.stats["captions_skipped"] += 1
@@ -602,9 +613,11 @@ class DatasetProcessor:
                         prefix = self.settings.caption_prefix.strip().strip(",;")
                         if prefix and not caption.casefold().startswith(prefix.casefold()):
                             caption = f"{prefix}, {caption}".strip().strip(",")
-                        if self.settings.append_clip_label_to_caption and clip_category:
-                            if clip_category.casefold() not in caption.casefold():
-                                caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+                        caption = append_clip_category(
+                            caption,
+                            clip_category,
+                            self.settings.append_clip_label_to_caption,
+                        )
                         record["caption"] = caption
                         record["description_ru"] = ""
                         if self.settings.translate_captions:
@@ -671,15 +684,20 @@ class DatasetProcessor:
                     record["clip_relative_score"] = round(clip_score, 6)
                     self.log(f"  → CLIP: {clip_category} ({clip_score * 100:.1f}% среди категорий)")
                 except Exception as exc:
-                    self.log(f"  ! CLIP недоступен для {source.name}: {type(exc).__name__}: {exc}")
+                    raise RuntimeError(
+                        f"CLIP-классификация не выполнена для {source.name}: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
 
             caption = self.services.caption(image)
             prefix = self.settings.caption_prefix.strip().strip(",;")
             if prefix and not caption.casefold().startswith(prefix.casefold()):
                 caption = f"{prefix}, {caption}".strip().strip(",")
-            if self.settings.append_clip_label_to_caption and clip_category:
-                if clip_category.casefold() not in caption.casefold():
-                    caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+            caption = append_clip_category(
+                caption,
+                clip_category,
+                self.settings.append_clip_label_to_caption,
+            )
 
             record.update(reason="", caption=caption, description_ru="")
             if self.settings.translate_captions:
@@ -757,8 +775,10 @@ class DatasetProcessor:
                 try:
                     self.services.load_clip_model()
                 except Exception as exc:
-                    self.settings.classify_clip = False
-                    self.log(f"Предупреждение: CLIP не удалось загрузить ({type(exc).__name__}: {exc}). Продолжаю без классификации.")
+                    raise RuntimeError(
+                        f"CLIP включён, но модель не удалось загрузить: "
+                        f"{type(exc).__name__}: {exc}. Генерация без запрошенной категории отменена."
+                    ) from exc
             if self.settings.generate_captions:
                 try:
                     self.services.load_caption_model()
@@ -2800,19 +2820,20 @@ class DatasetCuratorApp(tk.Tk):
                 services.load_caption_model()
                 with Image.open(source) as raw:
                     image = ImageOps.exif_transpose(raw).convert("RGB")
+                category = ""
+                if settings.classify_clip:
+                    services.load_clip_model()
+                    category, score = services.classify(image)
+                    self.event_queue.put(("log", f"CLIP: {category} ({score * 100:.1f}% среди категорий)"))
                 caption = services.caption(image)
                 prefix = settings.caption_prefix.strip().strip(",;")
                 if prefix and not caption.casefold().startswith(prefix.casefold()):
                     caption = f"{prefix}, {caption}".strip().strip(",")
-                if settings.classify_clip:
-                    try:
-                        services.load_clip_model()
-                        category, score = services.classify(image)
-                        self.event_queue.put(("log", f"CLIP: {category} ({score * 100:.1f}% среди категорий)"))
-                        if settings.append_clip_label_to_caption and category and category.casefold() not in caption.casefold():
-                            caption = f"{caption.rstrip(' .,;')} , {category}".replace(" ,", ",")
-                    except Exception as exc:
-                        self.event_queue.put(("log", f"CLIP недоступен, оставлена подпись BLIP: {exc}"))
+                caption = append_clip_category(
+                    caption,
+                    category,
+                    settings.append_clip_label_to_caption,
+                )
                 if settings.translate_captions:
                     try:
                         caption_ru = catalog.translate_en_ru(caption, settings.translation_provider, settings.translation_config)
