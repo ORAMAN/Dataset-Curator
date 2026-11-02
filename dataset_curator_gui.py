@@ -887,6 +887,10 @@ class DatasetCuratorApp(tk.Tk):
         self.review_record_cache: dict[str, dict[str, dict[str, Any]]] = {"selected": {}, "rejected": {}}
         self.review_visible_count: dict[str, int] = {"selected": 0, "rejected": 0}
         self.review_card_widgets: dict[tuple[str, str], dict[str, Any]] = {}
+        self.review_bulk_selected: dict[str, set[str]] = {"selected": set(), "rejected": set()}
+        self.review_bulk_select_all_vars: dict[str, tk.BooleanVar] = {}
+        self.review_bulk_count_vars: dict[str, tk.StringVar] = {}
+        self.review_bulk_delete_buttons: dict[str, ttk.Button] = {}
         self.review_caption_drafts: dict[str, str] = {}
         self.review_caption_ru_drafts: dict[str, str] = {}
         self.review_photo_refs: dict[str, list[Any]] = {"selected": [], "rejected": []}
@@ -1107,17 +1111,21 @@ class DatasetCuratorApp(tk.Tk):
         "break", so each shortcut is dispatched exactly once for all current and
         dynamically-created text controls.
         """
+        # Буквенные сочетания обрабатываются по keycode и keysym, а не через
+        # латинские шаблоны <Control-c>/<Control-v>: при русской раскладке
+        # Tk получает Cyrillic_* и обычные привязки не срабатывают.
         bindings = {
-            "<Control-x>": "cut",
-            "<Control-c>": "copy",
-            "<Control-v>": "paste",
-            "<Control-a>": "select_all",
             "<Shift-Delete>": "cut",
             "<Shift-Insert>": "paste",
             "<Control-Insert>": "copy",
         }
         edit_classes = ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox", "TCombobox")
         for class_name in edit_classes:
+            self.bind_class(
+                class_name,
+                "<Control-KeyPress>",
+                self._edit_shortcut_layout_independent,
+            )
             for sequence, action in bindings.items():
                 self.bind_class(
                     class_name,
@@ -1162,6 +1170,37 @@ class DatasetCuratorApp(tk.Tk):
             return "break"
         except (tk.TclError, AttributeError):
             return "break"
+
+    def _edit_shortcut_layout_independent(self, event):
+        """Обрабатывает Ctrl+A/C/V/X независимо от текущей раскладки Windows."""
+        keycode = getattr(event, "keycode", None)
+        try:
+            keycode = int(keycode)
+        except (TypeError, ValueError):
+            keycode = -1
+        keysym = str(getattr(event, "keysym", "") or "").casefold()
+        char = str(getattr(event, "char", "") or "").casefold()
+
+        actions_by_keycode = {
+            65: "select_all",  # A
+            67: "copy",        # C
+            86: "paste",       # V
+            88: "cut",         # X
+        }
+        actions_by_symbol = {
+            "a": "select_all", "ф": "select_all", "cyrillic_ef": "select_all",
+            "c": "copy", "с": "copy", "cyrillic_es": "copy",
+            "v": "paste", "м": "paste", "cyrillic_em": "paste",
+            "x": "cut", "ч": "cut", "cyrillic_che": "cut",
+        }
+        action = (
+            actions_by_keycode.get(keycode)
+            or actions_by_symbol.get(keysym)
+            or actions_by_symbol.get(char)
+        )
+        if action:
+            return self._edit_action(action, getattr(event, "widget", None))
+        return None
 
     def _edit_shortcut(self, event, action: str):
         return self._edit_action(action, getattr(event, "widget", None))
@@ -1516,8 +1555,132 @@ class DatasetCuratorApp(tk.Tk):
         )
         load_more.pack(side="left")
         self.review_load_more_buttons[group] = load_more
+
+        select_all_var = tk.BooleanVar(value=False)
+        self.review_bulk_select_all_vars[group] = select_all_var
+        ttk.Checkbutton(
+            footer,
+            text="Выбрать всё",
+            variable=select_all_var,
+            command=lambda g=group, v=select_all_var: self._set_review_group_selection(g, v.get()),
+        ).pack(side="left", padx=(14, 0))
+        count_var = tk.StringVar(value="Выбрано: 0")
+        self.review_bulk_count_vars[group] = count_var
+        ttk.Label(footer, textvariable=count_var, style="Muted.TLabel").pack(side="left", padx=(10, 0))
+        delete_selected_button = ttk.Button(
+            footer,
+            text="Удалить выбранные (0)",
+            style="Danger.TButton",
+            state="disabled",
+            command=lambda g=group: self._delete_selected_review_images(g),
+        )
+        delete_selected_button.pack(side="right")
+        self.review_bulk_delete_buttons[group] = delete_selected_button
+
         self.review_canvases[group] = canvas
         self.review_list_frames[group] = list_frame
+
+    def _on_review_card_selection_changed(self, group: str, source: Path, selected: bool):
+        selected_paths = self.review_bulk_selected.setdefault(group, set())
+        if selected:
+            selected_paths.add(str(source))
+        else:
+            selected_paths.discard(str(source))
+        self._update_review_bulk_controls(group)
+
+    def _set_review_group_selection(self, group: str, selected: bool):
+        """Выбирает или снимает выбор со всех изображений текущей вкладки."""
+        paths = {str(path) for path in self.review_file_cache.get(group, [])}
+        self.review_bulk_selected[group] = paths if selected else set()
+        for (card_group, _path), card in list(self.review_card_widgets.items()):
+            if card_group == group:
+                variable = card.get("selected")
+                if variable is not None:
+                    variable.set(selected)
+        self._update_review_bulk_controls(group)
+
+    def _update_review_bulk_controls(self, group: str):
+        files = {str(path) for path in self.review_file_cache.get(group, [])}
+        selected = self.review_bulk_selected.setdefault(group, set())
+        selected.intersection_update(files)
+        selected_count = len(selected)
+        total = len(files)
+        select_all_var = self.review_bulk_select_all_vars.get(group)
+        if select_all_var is not None:
+            select_all_var.set(bool(total) and selected_count == total)
+        count_var = self.review_bulk_count_vars.get(group)
+        if count_var is not None:
+            count_var.set(f"Выбрано: {selected_count} из {total}")
+        button = self.review_bulk_delete_buttons.get(group)
+        if button is not None:
+            button.configure(
+                text=f"Удалить выбранные ({selected_count})",
+                state="normal" if selected_count else "disabled",
+            )
+
+    def _delete_selected_review_images(self, group: str):
+        """Удаляет отмеченные изображения только из текущей вкладки."""
+        if group not in ("selected", "rejected") or self._review_is_busy():
+            return
+        available = {str(path) for path in self.review_file_cache.get(group, [])}
+        paths = [
+            Path(path_text)
+            for path_text in self.review_bulk_selected.get(group, set())
+            if path_text in available
+        ]
+        if not paths:
+            messagebox.showinfo(APP_TITLE, "Сначала отметьте изображения флажками в карточках.")
+            return
+        base = self._review_input_dir()
+        if base is None or not base.is_dir():
+            messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
+            return
+        group_title = "Выбранные" if group == "selected" else "Отбракованные"
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Безвозвратно удалить {len(paths)} изображений из вкладки «{group_title}»?\\n\\n"
+            "Для каждого изображения также будут удалены одноимённые файлы .txt и .json, "
+            "если они существуют.\\n\\nОперацию нельзя отменить.",
+            icon="warning",
+        ):
+            return
+
+        deleted_sources: list[Path] = []
+        failures: list[str] = []
+        warnings: list[str] = []
+        for source in paths:
+            try:
+                _deleted_files, cleanup_warnings = self._delete_review_image_and_sidecars(source, base)
+                deleted_sources.append(source)
+                warnings.extend(cleanup_warnings)
+            except Exception as exc:
+                failures.append(f"{source.name}: {type(exc).__name__}: {exc}")
+
+        for source in deleted_sources:
+            self.review_caption_drafts.pop(str(source), None)
+            self.review_caption_ru_drafts.pop(str(source), None)
+            self._remove_review_card_from_cache(group, source)
+
+        self.review_dirty["selected"] = True
+        self.review_dirty["rejected"] = True
+        self._log(
+            f"Групповое удаление ({group}): удалено изображений={len(deleted_sources)}, "
+            f"ошибок={len(failures)}, предупреждений={len(warnings)}"
+        )
+        self.v_status.set(f"Групповое удаление: удалено изображений {len(deleted_sources)}")
+        details = []
+        if failures:
+            details.append("Не удалось удалить:\\n" + "\\n".join(failures[:15]))
+        if warnings:
+            details.append("Предупреждения:\\n" + "\\n".join(warnings[:15]))
+        if details:
+            messagebox.showwarning(
+                APP_TITLE,
+                f"Удалено изображений: {len(deleted_sources)} из {len(paths)}.\\n\\n"
+                + "\\n\\n".join(details),
+            )
+        elif deleted_sources:
+            messagebox.showinfo(APP_TITLE, f"Удалено изображений: {len(deleted_sources)}.")
 
     def _make_review_count_var(self, group: str) -> tk.StringVar:
         var = tk.StringVar(value="Выбранные изображения" if group == "selected" else "Отбракованные изображения")
@@ -1800,6 +1963,7 @@ class DatasetCuratorApp(tk.Tk):
             ttk.Label(list_frame, text=text, style="Muted.TLabel", padding=20).pack(anchor="w")
 
         self._update_review_controls(group)
+        self._update_review_bulk_controls(group)
         canvas = self.review_canvases.get(group)
         if canvas is not None:
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -1810,6 +1974,10 @@ class DatasetCuratorApp(tk.Tk):
         self.review_load_generation[group] = self.review_catalog_request_id + 1
         self.review_loading[group] = False
         self.review_loaded[group] = False
+        self.review_bulk_selected[group].clear()
+        select_all_var = self.review_bulk_select_all_vars.get(group)
+        if select_all_var is not None:
+            select_all_var.set(False)
         self.review_dirty[group] = True
         self.review_base_paths[group] = ""
         self.review_file_cache[group] = []
@@ -1827,6 +1995,7 @@ class DatasetCuratorApp(tk.Tk):
                 child.destroy()
             ttk.Label(list_frame, text=message, style="Muted.TLabel", padding=20).pack(anchor="w")
         self._update_review_controls(group)
+        self._update_review_bulk_controls(group)
 
     def _render_review_batch(self, group: str, generation: int):
         """Создаёт несколько карточек за проход, оставляя Tk event loop отзывчивым."""
@@ -1908,6 +2077,7 @@ class DatasetCuratorApp(tk.Tk):
                     pass
 
         self.review_record_cache.get(group, {}).pop(source_text, None)
+        self.review_bulk_selected.get(group, set()).discard(source_text)
         if removed_index >= 0 and removed_index < old_visible:
             self.review_visible_count[group] = max(0, old_visible - 1)
 
@@ -1939,6 +2109,19 @@ class DatasetCuratorApp(tk.Tk):
     def _build_review_card(self, list_frame: ttk.Frame, group: str, source: Path):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
         card.pack(fill="x", padx=5, pady=5)
+
+        selected_var = tk.BooleanVar(
+            value=str(source) in self.review_bulk_selected.get(group, set())
+        )
+        selection_row = ttk.Frame(card)
+        selection_row.pack(fill="x", pady=(0, 5))
+        ttk.Checkbutton(
+            selection_row,
+            text="Выбрать",
+            variable=selected_var,
+            command=lambda p=source, g=group, v=selected_var:
+                self._on_review_card_selection_changed(g, p, v.get()),
+        ).pack(side="left")
 
         record = self.review_record_cache.get(group, {}).get(str(source)) or {}
         thumbnail = None
@@ -1981,7 +2164,7 @@ class DatasetCuratorApp(tk.Tk):
         )
         image_label.pack(fill="both", expand=True)
         image_label.bind(
-            "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
+            "<Button-1>", lambda _event, p=source, g=group: self._show_review_image(p, g), add="+"
         )
 
         content = ttk.Frame(card)
@@ -2072,6 +2255,7 @@ class DatasetCuratorApp(tk.Tk):
             "preview_label": image_label,
             "preview_size_var": preview_size_var,
             "thumb_request_id": None,
+            "selected": selected_var,
         }
         self.review_thumb_request_id += 1
         thumb_request_id = self.review_thumb_request_id
@@ -2137,18 +2321,41 @@ class DatasetCuratorApp(tk.Tk):
         except (tk.TclError, RuntimeError) as exc:
             self._log(f"Не удалось показать миниатюру {path_text}: {exc}")
 
-    def _show_review_image(self, source: Path):
-        """Показывает исходное изображение в отдельном окне с масштабированием."""
-        if not source.is_file():
-            messagebox.showerror(APP_TITLE, f"Файл изображения не найден:\n{source}")
-            return
+    def _show_review_image(self, source: Path, group: str | None = None):
+        """Открывает полноразмерный просмотрщик с навигацией по текущей вкладке."""
+        source = Path(source)
+        if group not in ("selected", "rejected"):
+            group = self._review_group_for_path(source)
+
+        navigation_files = [
+            Path(path) for path in self.review_file_cache.get(group, [])
+            if Path(path).is_file()
+        ]
+        source_text = str(source)
+        try:
+            source_resolved = source.resolve()
+            current_index = next(
+                (
+                    index for index, path in enumerate(navigation_files)
+                    if str(path) == source_text or path.resolve() == source_resolved
+                ),
+                -1,
+            )
+        except (OSError, RuntimeError, ValueError):
+            current_index = -1
+        if current_index < 0:
+            navigation_files.insert(0, source)
+            current_index = 0
 
         try:
             from PIL import Image, ImageOps, ImageTk
-            with Image.open(source) as raw:
+            with Image.open(navigation_files[current_index]) as raw:
                 full_image = ImageOps.exif_transpose(raw).convert("RGB")
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось открыть изображение:\n{source}\n\n{exc}")
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось открыть изображение:\n{navigation_files[current_index]}\n\n{exc}",
+            )
             return
 
         image_width, image_height = full_image.size
@@ -2156,15 +2363,16 @@ class DatasetCuratorApp(tk.Tk):
         screen_height = self.winfo_screenheight()
         max_image_width = max(320, int(screen_width * 0.88))
         max_image_height = max(240, int(screen_height * 0.74))
-        fit_zoom = min(max_image_width / image_width, max_image_height / image_height)
-        # Небольшие изображения можно увеличить до 200%; крупные сразу помещаются на экран.
-        initial_zoom = max(0.05, min(2.0, fit_zoom))
 
+        def fit_zoom() -> float:
+            return max(0.05, min(2.0, max_image_width / image_width, max_image_height / image_height))
+
+        initial_zoom = fit_zoom()
         window_width = min(screen_width - 30, max(640, int(image_width * initial_zoom) + 48))
         window_height = min(screen_height - 50, max(480, int(image_height * initial_zoom) + 112))
         dialog = tk.Toplevel(self)
         dialog.title(
-            f"{source.name} — {image_width:,} × {image_height:,} px".replace(",", " ")
+            f"{navigation_files[current_index].name} — {image_width:,} × {image_height:,} px".replace(",", " ")
         )
         dialog.transient(self)
         dialog.geometry(f"{window_width}x{window_height}")
@@ -2175,14 +2383,22 @@ class DatasetCuratorApp(tk.Tk):
 
         toolbar = ttk.Frame(container)
         toolbar.pack(fill="x")
-        ttk.Label(
-            toolbar,
-            text=f"Исходный размер: {image_width:,} × {image_height:,} px".replace(",", " "),
-            style="Muted.TLabel",
-        ).pack(side="left")
+
+        navigation_var = tk.StringVar(value="")
+        dimensions_var = tk.StringVar(value="")
+        previous_button = ttk.Button(toolbar, text="← Пред.", width=10)
+        previous_button.pack(side="left")
+        next_button = ttk.Button(toolbar, text="След. →", width=10)
+        next_button.pack(side="left", padx=(4, 8))
+        ttk.Label(toolbar, textvariable=navigation_var, style="Muted.TLabel").pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Label(toolbar, textvariable=dimensions_var, style="Muted.TLabel").pack(
+            side="left", padx=(8, 0)
+        )
 
         zoom_var = tk.StringVar(value="")
-        state = {"zoom": initial_zoom}
+        state = {"zoom": initial_zoom, "index": current_index}
         photo_ref = {"image": None}
 
         ttk.Button(
@@ -2200,7 +2416,7 @@ class DatasetCuratorApp(tk.Tk):
         ).pack(side="right", padx=(8, 0))
         ttk.Button(
             toolbar, text="Уместить",
-            command=lambda: redraw(min(1.0, max_image_width / image_width, max_image_height / image_height)),
+            command=lambda: redraw(fit_zoom()),
         ).pack(side="right", padx=(8, 0))
         ttk.Button(toolbar, text="Закрыть", command=dialog.destroy).pack(side="right", padx=(8, 0))
 
@@ -2238,6 +2454,72 @@ class DatasetCuratorApp(tk.Tk):
             state["zoom"] = zoom
             zoom_var.set(f"{zoom * 100:.0f}%")
 
+        def update_navigation_controls():
+            index = state["index"]
+            navigation_var.set(
+                f"{index + 1} / {len(navigation_files)}  ·  {navigation_files[index].name}"
+            )
+            previous_button.configure(state="normal" if index > 0 else "disabled")
+            next_button.configure(
+                state="normal" if index < len(navigation_files) - 1 else "disabled"
+            )
+
+        def show_index(target_index: int):
+            nonlocal full_image, image_width, image_height
+            if target_index < 0 or target_index >= len(navigation_files):
+                return "break"
+            target = navigation_files[target_index]
+            if not target.is_file():
+                messagebox.showwarning(
+                    APP_TITLE,
+                    f"Файл больше не существует:\n{target}\n\nОбновите список изображений.",
+                    parent=dialog,
+                )
+                return "break"
+            try:
+                with Image.open(target) as raw:
+                    new_image = ImageOps.exif_transpose(raw).convert("RGB")
+            except Exception as exc:
+                messagebox.showerror(
+                    APP_TITLE, f"Не удалось открыть изображение:\n{target}\n\n{exc}", parent=dialog
+                )
+                return "break"
+
+            full_image = new_image
+            image_width, image_height = full_image.size
+            state["index"] = target_index
+            dialog.title(
+                f"{target.name} — {image_width:,} × {image_height:,} px".replace(",", " ")
+            )
+            dimensions_var.set(
+                f"Размер: {image_width:,} × {image_height:,} px".replace(",", " ")
+            )
+            update_navigation_controls()
+            redraw(fit_zoom())
+            canvas.xview_moveto(0)
+            canvas.yview_moveto(0)
+            return "break"
+
+        previous_button.configure(command=lambda: show_index(state["index"] - 1))
+        next_button.configure(command=lambda: show_index(state["index"] + 1))
+
+        def navigate_by_keyboard(event):
+            keysym = str(getattr(event, "keysym", "") or "").casefold()
+            try:
+                keycode = int(getattr(event, "keycode", -1))
+            except (TypeError, ValueError):
+                keycode = -1
+            if keysym in {"left", "kp_left"}:
+                return show_index(state["index"] - 1)
+            if keysym in {"right", "kp_right"}:
+                return show_index(state["index"] + 1)
+            # A/D работают и при русской раскладке (физические клавиши A/D).
+            if keycode == 65 or keysym in {"a", "ф", "cyrillic_ef"}:
+                return show_index(state["index"] - 1)
+            if keycode == 68 or keysym in {"d", "в", "cyrillic_ve"}:
+                return show_index(state["index"] + 1)
+            return None
+
         def zoom_with_wheel(event):
             factor = 1.15 if event.delta > 0 else 1 / 1.15
             redraw(state["zoom"] * factor)
@@ -2245,8 +2527,14 @@ class DatasetCuratorApp(tk.Tk):
 
         canvas.bind("<Control-MouseWheel>", zoom_with_wheel, add="+")
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"), add="+")
+        dialog.bind("<KeyPress>", navigate_by_keyboard, add="+")
         dialog.bind("<Escape>", lambda _event: dialog.destroy(), add="+")
+        dimensions_var.set(
+            f"Размер: {image_width:,} × {image_height:,} px".replace(",", " ")
+        )
+        update_navigation_controls()
         redraw(initial_zoom)
+        canvas.focus_set()
 
     def _review_is_busy(self) -> bool:
         if self.worker and self.worker.is_alive():
@@ -2654,8 +2942,51 @@ class DatasetCuratorApp(tk.Tk):
         ttk.Button(buttons, text="Отмена", command=dialog.destroy).pack(side="right")
         words_entry.focus_set()
 
+    def _resolve_review_image_for_deletion(self, source: Path, base: Path) -> Path:
+        """Проверяет, что удаляется существующее изображение внутри текущего каталога."""
+        try:
+            resolved_base = base.resolve()
+            resolved_source = Path(source).resolve(strict=True)
+            resolved_source.relative_to(resolved_base)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError(
+                "Файл не найден или находится вне текущей исходной папки. "
+                "Файл не удалён; обновите список."
+            ) from exc
+        if not resolved_source.is_file() or resolved_source.suffix.lower() not in IMAGE_EXTENSIONS:
+            raise ValueError("Удалять можно только существующий файл изображения из текущего каталога.")
+        return resolved_source
+
+    def _delete_review_image_and_sidecars(self, source: Path, base: Path) -> tuple[list[Path], list[str]]:
+        """Удаляет изображение, одноимённые .txt/.json и запись изображения из SQLite."""
+        resolved_source = self._resolve_review_image_for_deletion(source, base)
+        resolved_source.unlink()
+        deleted_files = [resolved_source]
+        warnings: list[str] = []
+
+        for suffix in (".txt", ".json"):
+            companion = resolved_source.with_suffix(suffix)
+            try:
+                if companion.exists() or companion.is_symlink():
+                    if companion.is_file() or companion.is_symlink():
+                        companion.unlink()
+                        deleted_files.append(companion)
+                    else:
+                        warnings.append(f"Не является файлом, пропущен: {companion}")
+            except OSError as exc:
+                warnings.append(f"Не удалось удалить {companion}: {type(exc).__name__}: {exc}")
+
+        try:
+            CatalogStore(base).delete_image_record(resolved_source)
+        except Exception as exc:
+            warnings.append(
+                f"Файл удалён, но не удалось удалить запись SQLite для {resolved_source.name}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        return deleted_files, warnings
+
     def _delete_review_image_file(self, source: Path, group: str):
-        """Permanently delete an original image after explicit confirmation."""
+        """Удаляет изображение и связанные sidecar-файлы после подтверждения."""
         if self._review_is_busy():
             return
         base = self._review_input_dir()
@@ -2663,38 +2994,50 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "Выберите существующую исходную папку.")
             return
         try:
-            resolved_base = base.resolve()
-            resolved_source = source.resolve(strict=True)
-            resolved_source.relative_to(resolved_base)
-        except (OSError, RuntimeError, ValueError):
-            messagebox.showerror(
-                APP_TITLE,
-                "Файл не найден или находится вне текущей исходной папки. Файл не удалён; обновите список.",
+            resolved_source = self._resolve_review_image_for_deletion(source, base)
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        companions = [
+            resolved_source.with_suffix(suffix)
+            for suffix in (".txt", ".json")
+            if (
+                resolved_source.with_suffix(suffix).exists()
+                or resolved_source.with_suffix(suffix).is_symlink()
             )
-            return
-        if not resolved_source.is_file() or resolved_source.suffix.lower() not in IMAGE_EXTENSIONS:
-            messagebox.showerror(APP_TITLE, "Удалять можно только существующий файл изображения из текущего каталога.")
-            return
+        ]
+        companion_note = (
+            "\n\nТакже будут удалены:\n" + "\n".join(str(path) for path in companions)
+            if companions else
+            "\n\nОдноимённые файлы .txt и .json не найдены."
+        )
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Физически удалить изображение без возможности восстановления?\n\n{resolved_source}",
+            f"Физически удалить изображение без возможности восстановления?\n\n"
+            f"{resolved_source}{companion_note}",
             icon="warning",
         ):
             return
         try:
-            resolved_source.unlink()
-            CatalogStore(base).delete_image_record(resolved_source)
+            deleted_files, warnings = self._delete_review_image_and_sidecars(source, base)
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, f"Не удалось удалить изображение или запись SQLite:\n{type(exc).__name__}: {exc}")
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось удалить изображение:\n{type(exc).__name__}: {exc}",
+            )
             self._refresh_review_tab(group, reset=True, sync_existing=True)
             return
+
         self.review_caption_drafts.pop(str(source), None)
         self.review_caption_ru_drafts.pop(str(source), None)
         self._remove_review_card_from_cache(group, source)
         self.review_dirty["selected"] = True
         self.review_dirty["rejected"] = True
-        self._log(f"Физически удалён файл и запись SQLite: {resolved_source}")
+        self._log(f"Физически удалены файлы: {', '.join(str(path) for path in deleted_files)}")
         self.v_status.set(f"Файл удалён: {source.name}")
+        if warnings:
+            messagebox.showwarning(APP_TITLE, "Изображение удалено.\n\n" + "\n".join(warnings))
 
     def _translate_review_caption(
         self,
