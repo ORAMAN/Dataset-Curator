@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import hashlib
 import shutil
 import sqlite3
 import time
@@ -81,12 +82,39 @@ class CatalogStore:
             """)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS translation_cache (
-                    source_text TEXT PRIMARY KEY,
+                    source_text TEXT NOT NULL,
                     translated_text TEXT NOT NULL,
-                    provider TEXT NOT NULL DEFAULT 'mymemory',
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    provider TEXT NOT NULL DEFAULT 'google_free',
+                    config_hash TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (source_text, provider, config_hash)
                 )
             """)
+            # Upgrade the old source_text-only cache. A translation from one provider
+            # must never be returned for another provider or another set of credentials.
+            cache_info = list(connection.execute("PRAGMA table_info(translation_cache)"))
+            cache_columns = {row["name"] for row in cache_info}
+            cache_pk = [row["name"] for row in sorted(cache_info, key=lambda item: item["pk"]) if row["pk"]]
+            if "config_hash" not in cache_columns or cache_pk != ["source_text", "provider", "config_hash"]:
+                connection.execute("ALTER TABLE translation_cache RENAME TO translation_cache_legacy")
+                connection.execute("""
+                    CREATE TABLE translation_cache (
+                        source_text TEXT NOT NULL,
+                        translated_text TEXT NOT NULL,
+                        provider TEXT NOT NULL DEFAULT 'google_free',
+                        config_hash TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (source_text, provider, config_hash)
+                    )
+                """)
+                connection.execute("""
+                    INSERT OR IGNORE INTO translation_cache
+                        (source_text, translated_text, provider, config_hash, updated_at)
+                    SELECT source_text, translated_text, provider, '',
+                           COALESCE(updated_at, CURRENT_TIMESTAMP)
+                    FROM translation_cache_legacy
+                """)
+                connection.execute("DROP TABLE translation_cache_legacy")
             # A tiny migration path for databases created by earlier iterations.
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(images)")}
             required = {
@@ -418,29 +446,68 @@ class CatalogStore:
             row = connection.execute("SELECT value FROM catalog_meta WHERE key=?", (key,)).fetchone()
         return str(row["value"]) if row else default
 
-    def translate_en_ru(self, text: str, email: str = "") -> str:
-        """Use the persisted translation cache to avoid wasting the free API quota."""
+    def translate_en_ru(
+        self,
+        text: str,
+        provider: str = "google_free",
+        provider_config: dict[str, Any] | None = None,
+    ) -> str:
+        """Translate EN → RU with a provider-specific persistent cache.
+
+        Provider and configuration are part of the cache identity so switching
+        providers cannot return a stale translation. A legacy email passed as the
+        second positional argument is still accepted.
+        """
         source_text = (text or "").strip()
         if not source_text:
             return ""
+
+        config = dict(provider_config or {})
+        from translation.translation_service import get_translation_provider, translate_prompt
+
+        if get_translation_provider(provider) is None:
+            # Backward compatibility with the previous translate_en_ru(text, email) API.
+            config.setdefault("email", str(provider or ""))
+            provider = "myMemory_free"
+
+        config_json = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        config_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()[:24]
+
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT translated_text FROM translation_cache WHERE source_text=?",
-                (source_text,),
+                """
+                SELECT translated_text
+                FROM translation_cache
+                WHERE source_text=? AND provider=? AND config_hash=?
+                """,
+                (source_text, provider, config_hash),
             ).fetchone()
+            # Reuse pre-upgrade MyMemory entries only when no email/API key is configured.
+            if not row and provider == "myMemory_free" and not config.get("email") and not config.get("api_key"):
+                row = connection.execute(
+                    """
+                    SELECT translated_text
+                    FROM translation_cache
+                    WHERE source_text=? AND provider='mymemory' AND config_hash=''
+                    """,
+                    (source_text,),
+                ).fetchone()
         if row and str(row["translated_text"]).strip():
             return str(row["translated_text"])
 
-        translated = translate_en_ru_mymemory(source_text, email)
+        translated = translate_prompt(source_text, provider, config)
         with self._connect() as connection:
-            connection.execute("""
-                INSERT INTO translation_cache(source_text, translated_text, provider)
-                VALUES (?, ?, 'mymemory')
-                ON CONFLICT(source_text) DO UPDATE SET
+            connection.execute(
+                """
+                INSERT INTO translation_cache
+                    (source_text, translated_text, provider, config_hash)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_text, provider, config_hash) DO UPDATE SET
                     translated_text=excluded.translated_text,
-                    provider=excluded.provider,
                     updated_at=CURRENT_TIMESTAMP
-            """, (source_text, translated))
+                """,
+                (source_text, translated, provider, config_hash),
+            )
         return translated
 
     def export_selected(self, output_dir: str | Path, include_russian_csv: bool = True) -> tuple[int, int, Path]:
