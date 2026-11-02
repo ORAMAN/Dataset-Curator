@@ -1674,7 +1674,9 @@ class DatasetCuratorApp(tk.Tk):
         ):
             return
 
-        scroll_anchor = self._capture_review_scroll_anchor(group)
+        scroll_anchor = self._capture_review_scroll_anchor(
+            group, preferred_paths=[str(path) for path in paths]
+        )
 
         try:
             catalog = CatalogStore(base)
@@ -2094,8 +2096,12 @@ class DatasetCuratorApp(tk.Tk):
                     text="Все изображения показаны" if total else "Нет изображений",
                 )
 
-    def _capture_review_scroll_anchor(self, group: str) -> dict[str, Any] | None:
-        """Запоминает верхнюю видимую карточку и её смещение относительно viewport."""
+    def _capture_review_scroll_anchor(
+        self,
+        group: str,
+        preferred_paths: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
+        """Запоминает позицию верхней видимой удаляемой карточки или верхней видимой карточки списка."""
         canvas = self.review_canvases.get(group)
         if canvas is None:
             return None
@@ -2104,6 +2110,8 @@ class DatasetCuratorApp(tk.Tk):
             viewport_top = float(canvas.canvasy(0))
             viewport_bottom = float(canvas.canvasy(canvas.winfo_height()))
             visible_cards = []
+            preferred_cards = []
+            preferred_set = {str(path) for path in preferred_paths or ()}
             for (card_group, path_text), card in self.review_card_widgets.items():
                 if card_group != group:
                     continue
@@ -2114,11 +2122,18 @@ class DatasetCuratorApp(tk.Tk):
                 card_bottom = card_top + float(frame.winfo_height())
                 if card_bottom > viewport_top and card_top < viewport_bottom:
                     visible_cards.append((card_top, path_text))
+                    if path_text in preferred_set:
+                        preferred_cards.append((card_top, path_text))
 
-            if not visible_cards:
+            # При групповом удалении ориентируемся на самую верхнюю из удаляемых
+            # карточек, которая видна в окне. Для одиночного удаления это карточка,
+            # на которой была нажата кнопка. Если удаляемые карточки вне viewport —
+            # сохраняем обычную верхнюю видимую карточку.
+            candidates = preferred_cards or visible_cards
+            if not candidates:
                 return None
 
-            anchor_top, anchor_path = min(visible_cards, key=lambda item: item[0])
+            anchor_top, anchor_path = min(candidates, key=lambda item: item[0])
             paths = [str(path) for path in self.review_file_cache.get(group, [])]
             try:
                 anchor_index = paths.index(anchor_path)
@@ -3193,7 +3208,9 @@ class DatasetCuratorApp(tk.Tk):
             icon="warning",
         ):
             return
-        scroll_anchor = self._capture_review_scroll_anchor(group)
+        scroll_anchor = self._capture_review_scroll_anchor(
+            group, preferred_paths=[str(source)]
+        )
         try:
             deleted_files, warnings = self._delete_review_image_and_sidecars(source, base)
         except Exception as exc:
