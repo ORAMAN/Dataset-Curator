@@ -187,3 +187,5 @@ jobs:
         run: |
           python -m compileall -q translation
           python -m unittest tests.test_translation_providers -v
+      - name: Test CLIP-aware caption generation
+        run: python -m unittest tests.test_caption_generation -v
