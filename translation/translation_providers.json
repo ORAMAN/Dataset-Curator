@@ -106,6 +106,88 @@
           ]
         },
         {
+          "key": "openai",
+          "name": "OpenAI-совместимый API (OpenAI / Ollama / прокси)",
+          "type": "need_api_key",
+          "support": {
+            "en_US": "English",
+            "ru_RU": "Russian"
+          },
+          "concurrent": 1,
+          "config": [
+            {
+              "key": "api_base",
+              "title": "API Base",
+              "desc": "<ul><li>https://api.openai.com/v1</li><li>https://api.openai-proxy.com/v1</li><li>https://chatai.1rmb.tk/v1</li><li>...</li></ul>",
+              "type": "input",
+              "default": "http://localhost:11434/v1"
+            },
+            {
+              "key": "api_key",
+              "title": "API Key",
+              "type": "input",
+              "privacy": true
+            },
+            {
+              "key": "model",
+              "title": "Model",
+              "type": "input",
+              "default": "lukey03/qwen3.5-9b-abliterated-vision",
+              "desc": "Example: gpt-3.5-turbo, gpt-3.5-turbo-16k, gpt-3.5-turbo-0301, gpt-3.5-turbo-0613, gpt-3.5-turbo-16k-0613, gpt-3.5-turbo-1106, gpt-3.5-turbo-instruct, text-davinci-003, text-davinci-002, code-davinci-002, gpt-4, gpt-4-0314, gpt-4-0613, gpt-4-32k, gpt-4-32k-0314, gpt-4-32k-0613, gpt-4-1106-preview, gpt-4-vision-preview",
+              "options": [
+                "gpt-3.5-turbo",
+                "gpt-3.5-turbo-16k",
+                "gpt-3.5-turbo-0301",
+                "gpt-3.5-turbo-0613",
+                "gpt-3.5-turbo-16k-0613",
+                "gpt-3.5-turbo-1106",
+                "gpt-3.5-turbo-instruct",
+                "text-davinci-003",
+                "text-davinci-002",
+                "code-davinci-002",
+                "gpt-4",
+                "gpt-4-0314",
+                "gpt-4-0613",
+                "gpt-4-32k",
+                "gpt-4-32k-0314",
+                "gpt-4-32k-0613",
+                "gpt-4-1106-preview",
+                "gpt-4-vision-preview"
+              ]
+            }
+          ],
+          "help": [
+            {
+              "title": "[official] OpenAI API",
+              "url": "https://platform.openai.com/docs/introduction"
+            },
+            {
+              "title": "[YouTube] How to Get Your OpenAI API Key",
+              "url": "https://www.youtube.com/watch?v=nafDyRsVnXU"
+            },
+            {
+              "title": "【中文】申请教程 by BobTranslate",
+              "url": "https://bobtranslate.com/service/translate/openai.html"
+            },
+            {
+              "title": "【中文】申请教程 by TTime",
+              "url": "https://ttime.timerecord.cn/pages/bc2a83/"
+            },
+            {
+              "title": "【中文】申请教程 by Pot",
+              "url": "https://pot.pylogmon.com/docs/tutorial/api/openai"
+            },
+            {
+              "title": "[prompt-all-in-one Wiki] Translation API Description / 翻译接口说明",
+              "url": "https://aiodoc.physton.com/TranslationApiConfiguration.html#translation-api-description"
+            },
+            {
+              "title": "[prompt-all-in-one Wiki] Configure ChatGPT / 配置ChatGPT",
+              "url": "https://aiodoc.physton.com/UsingChatgptToGeneratePrompts.html#configure-chatgpt"
+            }
+          ]
+        },
+        {
           "key": "microsoft",
           "name": "Microsoft ﹍﹍﹍﹍﹍﹍﹍ [2,000,000 chars/month]",
           "type": "need_api_key",
@@ -286,34 +368,6 @@
             {
               "title": "[official] Creating API keys | Yandex Cloud - Documentation",
               "url": "https://cloud.yandex.com/en/docs/iam/operations/api-key/create"
-            },
-            {
-              "title": "[prompt-all-in-one Wiki] Translation API Description / 翻译接口说明",
-              "url": "https://aiodoc.physton.com/TranslationApiConfiguration.html#translation-api-description"
-            }
-          ]
-        },
-        {
-          "key": "myMemory",
-          "name": "MyMemory ﹍﹍﹍﹍﹍﹍﹍ [50,000 chars/day]",
-          "type": "need_api_key",
-          "support": {
-            "en_US": "en",
-            "ru_RU": "ru"
-          },
-          "concurrent": 10,
-          "config": [
-            {
-              "key": "api_key",
-              "title": "API Key",
-              "type": "input",
-              "privacy": true
-            }
-          ],
-          "help": [
-            {
-              "title": "MyMemory: API key generator",
-              "url": "https://mymemory.translated.net/doc/keygen.php"
             },
             {
               "title": "[prompt-all-in-one Wiki] Translation API Description / 翻译接口说明",
