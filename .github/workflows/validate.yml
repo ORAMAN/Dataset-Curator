@@ -58,6 +58,7 @@ jobs:
               "_set_review_group_selection", "_update_review_bulk_controls",
               "_delete_selected_review_images", "_resolve_review_image_for_deletion",
               "_delete_review_image_and_sidecars", "_scroll_review_by_page",
+              "_capture_review_scroll_anchor", "_restore_review_scroll_anchor",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -77,6 +78,8 @@ jobs:
           assert '"<Prior>"' in source and '"<Next>"' in source, "Review lists must support PageUp/PageDown"
           assert 'canvas.yview_scroll(-1 if direction < 0 else 1, "pages")' in source
           assert 'keysym in {"left", "kp_left"}' in source and 'keysym in {"right", "kp_right"}' in source
+          assert '"preferred_paths"' in source and '"offset"' in source, "Deletion must restore the scroll anchor"
+          assert "self.after_idle(" in source and "self._restore_review_scroll_anchor" in source
           assert "time.perf_counter() + 0.008" in source, "Queue polling must be time-bounded"
           assert "created < 4" in source, "Review cards must be created in small batches"
           assert "DatasetCuratorReviewLoad-" in source
