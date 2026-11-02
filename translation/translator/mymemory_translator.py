@@ -39,3 +39,10 @@ class MyMemoryTranslator(BaseTranslator):
         if not translated:
             raise RuntimeError(get_lang("no_response_from", {"0":"MyMemory"}))
         return translated
+
+
+class MyMemoryAPITranslator(MyMemoryTranslator):
+    """MyMemory adapter variant that requires an API key."""
+
+    def __init__(self):
+        super().__init__("myMemory")
