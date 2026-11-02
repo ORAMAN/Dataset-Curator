@@ -1645,12 +1645,21 @@ class DatasetCuratorApp(tk.Tk):
         ):
             return
 
+        try:
+            catalog = CatalogStore(base)
+        except Exception as exc:
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось открыть каталог SQLite:\n{type(exc).__name__}: {exc}",
+            )
+            return
+
         deleted_sources: list[Path] = []
         failures: list[str] = []
         warnings: list[str] = []
         for source in paths:
             try:
-                _deleted_files, cleanup_warnings = self._delete_review_image_and_sidecars(source, base)
+                _deleted_files, cleanup_warnings = self._delete_review_image_and_sidecars(source, base, catalog)
                 deleted_sources.append(source)
                 warnings.extend(cleanup_warnings)
             except Exception as exc:
@@ -2165,7 +2174,7 @@ class DatasetCuratorApp(tk.Tk):
         )
         image_label.pack(fill="both", expand=True)
         image_label.bind(
-            "<Button-1>", lambda _event, p=source, g=group: self._show_review_image(p, g), add="+"
+            "<Button-1>", lambda _event, p=source: self._show_review_image(p), add="+"
         )
 
         content = ttk.Frame(card)
@@ -2958,7 +2967,12 @@ class DatasetCuratorApp(tk.Tk):
             raise ValueError("Удалять можно только существующий файл изображения из текущего каталога.")
         return resolved_source
 
-    def _delete_review_image_and_sidecars(self, source: Path, base: Path) -> tuple[list[Path], list[str]]:
+    def _delete_review_image_and_sidecars(
+        self,
+        source: Path,
+        base: Path,
+        catalog: CatalogStore | None = None,
+    ) -> tuple[list[Path], list[str]]:
         """Удаляет изображение, одноимённые .txt/.json и запись изображения из SQLite."""
         resolved_source = self._resolve_review_image_for_deletion(source, base)
         resolved_source.unlink()
@@ -2978,7 +2992,7 @@ class DatasetCuratorApp(tk.Tk):
                 warnings.append(f"Не удалось удалить {companion}: {type(exc).__name__}: {exc}")
 
         try:
-            CatalogStore(base).delete_image_record(resolved_source)
+            (catalog or CatalogStore(base)).delete_image_record(resolved_source)
         except Exception as exc:
             warnings.append(
                 f"Файл удалён, но не удалось удалить запись SQLite для {resolved_source.name}: "
