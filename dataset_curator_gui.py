@@ -2501,12 +2501,11 @@ class DatasetCuratorApp(tk.Tk):
                         if prefix and not caption.casefold().startswith(prefix.casefold()):
                             caption = f"{prefix}, {caption}".strip().strip(",")
 
-                        if (
-                            settings.append_clip_label_to_caption
-                            and clip_category
-                            and clip_category.casefold() not in caption.casefold()
-                        ):
-                            caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+                        caption = append_clip_category(
+                            caption,
+                            clip_category or "",
+                            settings.append_clip_label_to_caption,
+                        )
 
                         caption_ru = ""
                         if settings.translate_captions:
