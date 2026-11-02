@@ -1137,6 +1137,35 @@ class DatasetCuratorApp(tk.Tk):
         self.bind_all("<Button-3>", self._show_edit_context_menu, add="+")
         self.bind_all("<Control-Button-1>", self._show_edit_context_menu, add="+")
         self.bind_all("<Shift-F10>", self._show_edit_context_menu_keyboard, add="+")
+        # PageUp/PageDown управляют прокруткой активного списка изображений.
+        self.bind_all("<Prior>", lambda event: self._scroll_review_by_page(event, -1), add="+")
+        self.bind_all("<Next>", lambda event: self._scroll_review_by_page(event, 1), add="+")
+
+    def _scroll_review_by_page(self, event, direction: int):
+        """Прокручивает активную вкладку просмотра на одну страницу."""
+        try:
+            selected_tab = self.notebook.select()
+            if selected_tab == str(self.tab_selected):
+                group = "selected"
+            elif selected_tab == str(self.tab_rejected):
+                group = "rejected"
+            else:
+                return None
+
+            # Не перехватываем PageUp/PageDown в редакторах описаний и полях ввода:
+            # там эти клавиши должны сохранять стандартное поведение Tk.
+            focused = self.focus_get()
+            if focused is not None and self._is_text_edit_widget(focused):
+                return None
+
+            canvas = self.review_canvases.get(group)
+            if canvas is None or not canvas.winfo_exists():
+                return None
+
+            canvas.yview_scroll(-1 if direction < 0 else 1, "pages")
+            return "break"
+        except (tk.TclError, AttributeError):
+            return None
 
     @staticmethod
     def _is_text_edit_widget(widget) -> bool:
