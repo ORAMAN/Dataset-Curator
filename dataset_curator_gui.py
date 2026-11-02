@@ -1638,9 +1638,9 @@ class DatasetCuratorApp(tk.Tk):
         group_title = "Выбранные" if group == "selected" else "Отбракованные"
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Безвозвратно удалить {len(paths)} изображений из вкладки «{group_title}»?\\n\\n"
+            f"Безвозвратно удалить {len(paths)} изображений из вкладки «{group_title}»?\n\n"
             "Для каждого изображения также будут удалены одноимённые файлы .txt и .json, "
-            "если они существуют.\\n\\nОперацию нельзя отменить.",
+            "если они существуют.\n\nОперацию нельзя отменить.",
             icon="warning",
         ):
             return
@@ -1679,14 +1679,14 @@ class DatasetCuratorApp(tk.Tk):
         self.v_status.set(f"Групповое удаление: удалено изображений {len(deleted_sources)}")
         details = []
         if failures:
-            details.append("Не удалось удалить:\\n" + "\\n".join(failures[:15]))
+            details.append("Не удалось удалить:\n" + "\n".join(failures[:15]))
         if warnings:
-            details.append("Предупреждения:\\n" + "\\n".join(warnings[:15]))
+            details.append("Предупреждения:\n" + "\n".join(warnings[:15]))
         if details:
             messagebox.showwarning(
                 APP_TITLE,
-                f"Удалено изображений: {len(deleted_sources)} из {len(paths)}.\\n\\n"
-                + "\\n\\n".join(details),
+                f"Удалено изображений: {len(deleted_sources)} из {len(paths)}.\n\n"
+                + "\n\n".join(details),
             )
         elif deleted_sources:
             messagebox.showinfo(APP_TITLE, f"Удалено изображений: {len(deleted_sources)}.")
