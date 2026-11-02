@@ -362,6 +362,14 @@ class CatalogStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_all_images(self) -> list[dict[str, Any]]:
+        """Return every registered image, regardless of its current review status."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM images ORDER BY filename COLLATE NOCASE, path COLLATE NOCASE"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def _status_values(self, group: str) -> list[str]:
         return sorted(SELECTED_STATUSES if group == "selected" else REJECTED_STATUSES)
 
@@ -422,17 +430,49 @@ class CatalogStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM images WHERE path=?", (normalized,))
 
-    def set_descriptions(self, path: str | Path, description_en: str, description_ru: str) -> None:
+    def set_descriptions(
+        self,
+        path: str | Path,
+        description_en: str,
+        description_ru: str,
+        clip_category: str | None = None,
+        clip_relative_score: float | None = None,
+    ) -> None:
+        """Save descriptions and optionally refresh CLIP metadata without changing image status."""
         normalized = self._normalize_path(path)
+        has_clip_result = clip_category is not None
         with self._connect() as connection:
-            connection.execute("""
-                INSERT INTO images(path, filename, status, description_en, description_ru)
-                VALUES (?, ?, 'pending', ?, ?)
+            connection.execute(
+                """
+                INSERT INTO images(
+                    path, filename, status, description_en, description_ru,
+                    clip_category, clip_relative_score
+                )
+                VALUES (?, ?, 'pending', ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     description_en=excluded.description_en,
                     description_ru=excluded.description_ru,
+                    clip_category=CASE
+                        WHEN ? THEN excluded.clip_category
+                        ELSE images.clip_category
+                    END,
+                    clip_relative_score=CASE
+                        WHEN ? THEN excluded.clip_relative_score
+                        ELSE images.clip_relative_score
+                    END,
                     updated_at=CURRENT_TIMESTAMP
-            """, (normalized, Path(normalized).name, description_en.strip(), description_ru.strip()))
+                """,
+                (
+                    normalized,
+                    Path(normalized).name,
+                    description_en.strip(),
+                    description_ru.strip(),
+                    str(clip_category or ""),
+                    clip_relative_score,
+                    int(has_clip_result),
+                    int(has_clip_result),
+                ),
+            )
 
     def set_metadata(self, key: str, value: str) -> None:
         with self._connect() as connection:
