@@ -25,6 +25,7 @@ _TRANSLATOR_CLASSES = {
     "iflytekV2": ("translation.translator.iflytekV2_translator", "IflytekV2Translator"),
     "mbart50": ("translation.translator.mbart50_translator", "MBart50Translator"),
     "myMemory_free": ("translation.translator.mymemory_translator", "MyMemoryTranslator"),
+    "myMemory": ("translation.translator.mymemory_translator", "MyMemoryAPITranslator"),
     "openai": ("translation.translator.openai_compatible_translator", "OpenAICompatibleTranslator"),
 }
 
