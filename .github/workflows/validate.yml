@@ -78,6 +78,9 @@ jobs:
           assert '"<Prior>"' in source and '"<Next>"' in source, "Review lists must support PageUp/PageDown"
           assert 'canvas.yview_scroll(-1 if direction < 0 else 1, "pages")' in source
           assert 'keysym in {"left", "kp_left"}' in source and 'keysym in {"right", "kp_right"}' in source
+          assert 'keysym in {"delete", "kp_delete"}' in source, "Image viewer must delete the current photo using Delete"
+          assert 'text="Удалить (Delete)"' in source, "Image viewer must expose a direct delete control"
+          assert "navigation_files.pop(current_index)" in source and "show_index(next_index)" in source
           assert "preferred_paths" in source and '"offset"' in source, "Deletion must restore the scroll anchor"
           assert "self.after_idle(" in source and "self._restore_review_scroll_anchor" in source
           assert "time.perf_counter() + 0.008" in source, "Queue polling must be time-bounded"
