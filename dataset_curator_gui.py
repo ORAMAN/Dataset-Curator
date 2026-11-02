@@ -2603,6 +2603,12 @@ class DatasetCuratorApp(tk.Tk):
             command=lambda: redraw(fit_zoom()),
         ).pack(side="right", padx=(8, 0))
         ttk.Button(toolbar, text="Закрыть", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(
+            toolbar,
+            text="Удалить (Delete)",
+            style="Danger.TButton",
+            command=lambda: delete_current_image(),
+        ).pack(side="left", padx=(8, 0))
 
         image_frame = ttk.Frame(container)
         image_frame.pack(fill="both", expand=True, pady=(8, 0))
@@ -2687,12 +2693,79 @@ class DatasetCuratorApp(tk.Tk):
         previous_button.configure(command=lambda: show_index(state["index"] - 1))
         next_button.configure(command=lambda: show_index(state["index"] + 1))
 
+        def delete_current_image():
+            """Удаляет текущую фотографию без подтверждения и сразу открывает следующую."""
+            if self._review_is_busy():
+                return "break"
+
+            current_index = state["index"]
+            if current_index < 0 or current_index >= len(navigation_files):
+                return "break"
+
+            current_source = navigation_files[current_index]
+            base = self._review_input_dir()
+            if base is None or not base.is_dir():
+                messagebox.showerror(
+                    APP_TITLE,
+                    "Исходная папка недоступна. Изображение не удалено.",
+                    parent=dialog,
+                )
+                return "break"
+
+            scroll_anchor = self._capture_review_scroll_anchor(
+                group, preferred_paths=[str(current_source)]
+            )
+            try:
+                deleted_files, warnings = self._delete_review_image_and_sidecars(
+                    current_source, base
+                )
+            except Exception as exc:
+                messagebox.showerror(
+                    APP_TITLE,
+                    f"Не удалось удалить изображение:\n{type(exc).__name__}: {exc}",
+                    parent=dialog,
+                )
+                return "break"
+
+            self.review_caption_drafts.pop(str(current_source), None)
+            self.review_caption_ru_drafts.pop(str(current_source), None)
+            self._remove_review_card_from_cache(group, current_source)
+            self.review_dirty["selected"] = True
+            self.review_dirty["rejected"] = True
+
+            deleted_name = current_source.name
+            self._log(
+                f"Удалено из окна просмотра: {', '.join(str(path) for path in deleted_files)}"
+            )
+            self.v_status.set(f"Файл удалён: {deleted_name}")
+
+            # После удаления текущего индекса следующий файл сдвигается на его место.
+            # Если удалялся последний — остаёмся на новом последнем файле.
+            navigation_files.pop(current_index)
+            if navigation_files:
+                next_index = min(current_index, len(navigation_files) - 1)
+                show_index(next_index)
+            else:
+                dialog.destroy()
+                self.v_status.set("В этой вкладке больше нет изображений")
+
+            if scroll_anchor:
+                self.after_idle(
+                    lambda g=group, a=scroll_anchor:
+                        self._restore_review_scroll_anchor(g, a)
+                )
+            for warning in warnings:
+                self._log(f"Предупреждение при удалении {deleted_name}: {warning}")
+            return "break"
+
         def navigate_by_keyboard(event):
             keysym = str(getattr(event, "keysym", "") or "").casefold()
             try:
                 keycode = int(getattr(event, "keycode", -1))
             except (TypeError, ValueError):
                 keycode = -1
+            if keysym in {"delete", "kp_delete"}:
+                return delete_current_image()
             if keysym in {"left", "kp_left"}:
                 return show_index(state["index"] - 1)
             if keysym in {"right", "kp_right"}:
