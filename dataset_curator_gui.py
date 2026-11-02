@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dataset_catalog import CatalogStore
+from caption_utils import append_clip_category
 from translation.translation_service import get_translation_providers
 
 import tkinter as tk
@@ -99,15 +100,6 @@ def get_blur_variance(image_rgb) -> float:
     import numpy as np
     gray = cv2.cvtColor(np.asarray(image_rgb), cv2.COLOR_RGB2GRAY)
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
-
-
-def append_clip_category(caption: str, category: str, enabled: bool = True) -> str:
-    """Append a CLIP category once, preserving the prompt's comma-separated format."""
-    caption = (caption or "").strip()
-    category = (category or "").strip()
-    if not enabled or not category or category.casefold() in caption.casefold():
-        return caption
-    return f"{caption.rstrip(' .,;')} , {category}".replace(" ,", ",")
 
 
 
