@@ -1457,19 +1457,20 @@ class DatasetCuratorApp(tk.Tk):
             lambda _event, g=group: self._on_review_sort_changed(g),
             add="+",
         )
-        if group == "selected":
+        if group in ("selected", "rejected"):
             ttk.Button(
                 toolbar, text="📝 Создать описания без текста",
-                command=self._generate_missing_selected_captions,
+                command=lambda g=group: self._generate_missing_captions(g),
             ).pack(side="left", padx=(10, 0))
             ttk.Button(
                 toolbar, text="♻ Пересоздать все описания",
-                command=self._recreate_all_descriptions,
+                command=lambda g=group: self._recreate_all_descriptions(g),
             ).pack(side="left", padx=(6, 0))
-            ttk.Button(
-                toolbar, text="Ключевые слова…",
-                command=self._open_selected_keyword_tool,
-            ).pack(side="left", padx=(6, 0))
+            if group == "selected":
+                ttk.Button(
+                    toolbar, text="Ключевые слова…",
+                    command=self._open_selected_keyword_tool,
+                ).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Обновить список", command=lambda g=group: self._refresh_review_tab(g, reset=True, sync_existing=True)).pack(side="right")
         ttk.Button(
             toolbar,
@@ -2255,7 +2256,10 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "Экспорт набора ещё выполняется. Дождитесь его завершения.")
             return True
         if self.review_workers:
-            messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи в карточке изображения.")
+            if any(key[1] == "__bulk_caption_generation__" for key in self.review_workers):
+                messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей пакетной генерации описаний.")
+            else:
+                messagebox.showwarning(APP_TITLE, "Дождитесь завершения текущей генерации подписи в карточке изображения.")
             return True
         return False
 
@@ -2377,16 +2381,18 @@ class DatasetCuratorApp(tk.Tk):
         self.review_dirty[target_group] = True
 
 
-    def _generate_missing_selected_captions(self):
-        """Generate captions only for selected images whose English caption is empty."""
-        self._run_bulk_caption_generation(recreate_all=False)
+    def _generate_missing_captions(self, group: str):
+        """Generate captions without English text for the requested review group."""
+        self._run_bulk_caption_generation(group=group, recreate_all=False)
 
-    def _recreate_all_descriptions(self):
-        """Regenerate descriptions for every registered image, replacing existing EN/RU text."""
-        self._run_bulk_caption_generation(recreate_all=True)
+    def _recreate_all_descriptions(self, group: str):
+        """Regenerate descriptions for every image in the requested review group."""
+        self._run_bulk_caption_generation(group=group, recreate_all=True)
 
-    def _run_bulk_caption_generation(self, recreate_all: bool = False):
-        """Run bulk BLIP + optional CLIP generation while preserving SQLite image statuses."""
+    def _run_bulk_caption_generation(self, group: str, recreate_all: bool = False):
+        """Run BLIP + optional CLIP generation only for the selected/rejected review group."""
+        if group not in ("selected", "rejected"):
+            raise ValueError(f"Недопустимая группа изображений: {group!r}")
         if self._review_is_busy():
             return
         base = self._review_input_dir()
@@ -2400,7 +2406,7 @@ class DatasetCuratorApp(tk.Tk):
             return
 
         catalog = CatalogStore(base)
-        rows = catalog.list_all_images() if recreate_all else catalog.list_images("selected")
+        rows = catalog.list_images(group)
         targets = [
             row for row in rows
             if Path(str(row.get("path") or "")).is_file()
@@ -2409,12 +2415,14 @@ class DatasetCuratorApp(tk.Tk):
                 or not str(row.get("description_en") or "").strip()
             )
         ]
+        group_title = "Выбранные" if group == "selected" else "Отбракованные"
+        group_word = "выбранных" if group == "selected" else "отбракованных"
         if not targets:
             messagebox.showinfo(
                 APP_TITLE,
-                "В каталоге нет доступных изображений для пересоздания."
+                f"На вкладке «{group_title}» нет доступных изображений для пересоздания."
                 if recreate_all
-                else "У всех выбранных изображений уже есть английское описание.",
+                else f"У всех {group_word} изображений уже есть английское описание.",
             )
             return
 
@@ -2428,14 +2436,14 @@ class DatasetCuratorApp(tk.Tk):
 
         if recreate_all:
             confirmation = (
-                f"Пересоздать EN/RU-описания для всех {len(targets)} изображений каталога?\n\n"
+                f"Пересоздать EN/RU-описания для всех {len(targets)} изображений вкладки «{group_title}»?\n\n"
                 "Существующие английские описания и переводы будут заменены. "
-                "Будут обработаны выбранные, отклонённые и ожидающие изображения.\n"
+                f"Будут обработаны только изображения со статусом «{group_title}».\n"
                 "Статусы и результаты фильтрации останутся без изменений."
             )
         else:
             confirmation = (
-                f"Создать описания для {len(targets)} выбранных изображений без английского описания?\n"
+                f"Создать описания для {len(targets)} {group_word} изображений без английского описания?\n"
                 "Результаты будут сохранены в SQLite; существующие описания не изменятся."
             )
         if not messagebox.askyesno(APP_TITLE, confirmation, icon="warning" if recreate_all else "question"):
@@ -2443,13 +2451,13 @@ class DatasetCuratorApp(tk.Tk):
 
         settings.generate_captions = True
         settings.caption_only = False
-        key = ("selected", "__bulk_caption_generation__")
+        key = (group, "__bulk_caption_generation__")
         total = len(targets)
         self.progress.configure(maximum=max(total, 1), value=0)
         self.v_progress.set(f"Подписей обработано: 0 / {total}")
         self.v_summary.set("Создано подписей: 0 · ошибок: 0")
         self.v_status.set(f"Подготовка описаний: 0 / {total}")
-        mode_text = "всего каталога" if recreate_all else "выбранных без описания"
+        mode_text = f"вкладки «{group_title}»" + (" (пересоздание)" if recreate_all else " без описания")
         self._log(f"Пакетная генерация описаний для {mode_text}: {total} файлов")
 
         def work():
@@ -2535,6 +2543,7 @@ class DatasetCuratorApp(tk.Tk):
                     attempted = index
                     self.event_queue.put((
                         "review_bulk_caption_progress",
+                        group,
                         index,
                         total,
                         generated,
@@ -2550,6 +2559,7 @@ class DatasetCuratorApp(tk.Tk):
                 services.close()
                 self.event_queue.put((
                     "review_bulk_caption_result",
+                    group,
                     generated,
                     errors,
                     attempted,
@@ -2559,7 +2569,7 @@ class DatasetCuratorApp(tk.Tk):
         worker = threading.Thread(
             target=work,
             daemon=True,
-            name="DatasetCuratorBulkCaptions",
+            name=f"DatasetCuratorBulkCaptions-{group}",
         )
         self.review_workers[key] = worker
         worker.start()
@@ -3467,19 +3477,19 @@ class DatasetCuratorApp(tk.Tk):
             elif kind == "review_thumbnail_result":
                 self._handle_review_thumbnail_result(event)
             elif kind == "review_bulk_caption_progress":
-                _, current, total, generated, errors = event
+                _, group, current, total, generated, errors = event
                 self.progress.configure(maximum=max(total, 1), value=current)
                 self.v_progress.set(f"Подписей обработано: {current} / {total}")
                 self.v_summary.set(f"Создано подписей: {generated} · ошибок: {errors}")
-                self.v_status.set(f"Создание описаний: {current} / {total}")
+                self.v_status.set(f"Создание описаний ({'выбранные' if group == 'selected' else 'отбракованные'}): {current} / {total}")
             elif kind == "review_bulk_caption_result":
-                _, generated, errors, attempted, total = event
-                self.review_workers.pop(("selected", "__bulk_caption_generation__"), None)
+                _, group, generated, errors, attempted, total = event
+                self.review_workers.pop((group, "__bulk_caption_generation__"), None)
                 self.progress.configure(maximum=max(total, 1), value=min(attempted, total))
                 self.v_progress.set(f"Подписей обработано: {attempted} / {total}")
                 self.v_summary.set(f"Создано подписей: {generated} · ошибок: {errors}")
                 self.v_status.set(f"Пакетные описания готовы: {generated}, ошибок: {errors}")
-                self._log(f"Пакетная генерация завершена: создано {generated}, ошибок {errors}")
+                self._log(f"Пакетная генерация завершена для вкладки «{'Выбранные' if group == 'selected' else 'Отбракованные'}»: создано {generated}, ошибок {errors}")
                 messagebox.showinfo(
                     APP_TITLE,
                     f"Создано описаний: {generated}\nОшибок: {errors}\n\nРезультаты сохранены в SQLite.",

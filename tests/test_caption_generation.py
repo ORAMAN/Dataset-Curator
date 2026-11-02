@@ -79,6 +79,10 @@ class CaptionGenerationTests(unittest.TestCase):
             self.assertEqual({Path(row["path"]).name for row in rows}, {
                 "selected.jpg", "rejected.jpg", "pending.jpg"
             })
+            selected_rows = catalog.list_images("selected")
+            rejected_rows = catalog.list_images("rejected")
+            self.assertEqual({Path(row["path"]).name for row in selected_rows}, {"selected.jpg"})
+            self.assertEqual({Path(row["path"]).name for row in rejected_rows}, {"rejected.jpg"})
 
     def test_bulk_ui_has_both_actions_and_runs_clip(self):
         source = Path("dataset_curator_gui.py").read_text(encoding="utf-8")
@@ -92,16 +96,25 @@ class CaptionGenerationTests(unittest.TestCase):
             for node in app.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        self.assertIn("_generate_missing_selected_captions", methods)
+        self.assertIn("_generate_missing_captions", methods)
         self.assertIn("_recreate_all_descriptions", methods)
         self.assertIn("_run_bulk_caption_generation", methods)
 
+        build_source = ast.get_source_segment(source, methods["_build_review_tab"])
+        self.assertIn('if group in ("selected", "rejected")', build_source)
+        self.assertIn('lambda g=group: self._generate_missing_captions(g)', build_source)
+        self.assertIn('lambda g=group: self._recreate_all_descriptions(g)', build_source)
+
         bulk_source = ast.get_source_segment(source, methods["_run_bulk_caption_generation"])
-        self.assertIn("catalog.list_all_images()", bulk_source)
+        self.assertIn("catalog.list_images(group)", bulk_source)
+        self.assertNotIn("catalog.list_all_images()", bulk_source)
+        self.assertIn('group not in ("selected", "rejected")', bulk_source)
         self.assertIn("services.classify(image)", bulk_source)
         self.assertIn("clip_category=clip_category", bulk_source)
         self.assertIn("append_clip_category(", bulk_source)
-        self.assertIn("text=\"♻ Пересоздать все описания\"", source)
+        self.assertIn("text=\"♻ Пересоздать все описания\"", build_source)
+        self.assertIn('"review_bulk_caption_progress",\n                        group,', bulk_source)
+        self.assertIn('"review_bulk_caption_result",\n                    group,', bulk_source)
 
 
 if __name__ == "__main__":
