@@ -54,6 +54,10 @@ jobs:
               "_make_review_thumbnail", "_queue_review_thumbnail_result",
               "_handle_review_thumbnail_result", "_add_new_files",
               "_on_review_sort_changed", "_review_sort_key",
+              "_edit_shortcut_layout_independent", "_on_review_card_selection_changed",
+              "_set_review_group_selection", "_update_review_bulk_controls",
+              "_delete_selected_review_images", "_resolve_review_image_for_deletion",
+              "_delete_review_image_and_sidecars",
           }
           required_processor = {"_process_caption_only", "_process_one"}
           missing = (required_app - app_methods) | (required_processor - processor_methods)
@@ -67,6 +71,10 @@ jobs:
           assert '"<Button-1>"' in source and "self._show_review_image(p)" in source
           assert '"Уместить"' in source and '"100%"' in source
           assert "zoom_with_wheel" in source, "Image viewer must support Ctrl+mouse-wheel zoom"
+          assert 'text="Выбрать всё"' in source and 'text="Удалить выбранные (0)"' in source
+          assert 'for suffix in (".txt", ".json")' in source, "Deleting a photo must remove same-stem TXT/JSON sidecars"
+          assert '"<Control-KeyPress>"' in source, "Edit shortcuts must be independent of the keyboard layout"
+          assert 'keysym in {"left", "kp_left"}' in source and 'keysym in {"right", "kp_right"}' in source
           assert "time.perf_counter() + 0.008" in source, "Queue polling must be time-bounded"
           assert "created < 4" in source, "Review cards must be created in small batches"
           assert "DatasetCuratorReviewLoad-" in source
