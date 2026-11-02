@@ -1451,6 +1451,10 @@ class DatasetCuratorApp(tk.Tk):
                 command=self._generate_missing_selected_captions,
             ).pack(side="left", padx=(10, 0))
             ttk.Button(
+                toolbar, text="♻ Пересоздать все описания",
+                command=self._recreate_all_descriptions,
+            ).pack(side="left", padx=(6, 0))
+            ttk.Button(
                 toolbar, text="Ключевые слова…",
                 command=self._open_selected_keyword_tool,
             ).pack(side="left", padx=(6, 0))
@@ -2362,7 +2366,15 @@ class DatasetCuratorApp(tk.Tk):
 
 
     def _generate_missing_selected_captions(self):
-        """Generate and save descriptions for every selected image with an empty EN caption."""
+        """Generate captions only for selected images whose English caption is empty."""
+        self._run_bulk_caption_generation(recreate_all=False)
+
+    def _recreate_all_descriptions(self):
+        """Regenerate descriptions for every registered image, replacing existing EN/RU text."""
+        self._run_bulk_caption_generation(recreate_all=True)
+
+    def _run_bulk_caption_generation(self, recreate_all: bool = False):
+        """Run bulk BLIP + optional CLIP generation while preserving SQLite image statuses."""
         if self._review_is_busy():
             return
         base = self._review_input_dir()
@@ -2374,79 +2386,170 @@ class DatasetCuratorApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
+
         catalog = CatalogStore(base)
-        rows = catalog.list_images("selected")
-        missing = [
+        rows = catalog.list_all_images() if recreate_all else catalog.list_images("selected")
+        targets = [
             row for row in rows
-            if not str(row.get("description_en") or "").strip()
-            and Path(str(row.get("path") or "")).is_file()
+            if Path(str(row.get("path") or "")).is_file()
+            and (
+                recreate_all
+                or not str(row.get("description_en") or "").strip()
+            )
         ]
-        if not missing:
-            messagebox.showinfo(APP_TITLE, "У всех выбранных изображений уже есть английское описание.")
+        if not targets:
+            messagebox.showinfo(
+                APP_TITLE,
+                "В каталоге нет доступных изображений для пересоздания."
+                if recreate_all
+                else "У всех выбранных изображений уже есть английское описание.",
+            )
             return
+
         if importlib.util.find_spec("transformers") is None:
             messagebox.showerror(
                 APP_TITLE,
-                "Для генерации описаний необходим пакет transformers. Запустите install_optional_ai.bat и повторите попытку.",
+                "Для генерации описаний необходим пакет transformers. "
+                "Запустите install_optional_ai.bat и повторите попытку.",
             )
             return
-        if not messagebox.askyesno(
-            APP_TITLE,
-            f"Создать описания для {len(missing)} выбранных изображений без английского описания?\n"
-            "Результаты будут сохранены в SQLite; существующие описания не изменятся.",
-        ):
+
+        if recreate_all:
+            confirmation = (
+                f"Пересоздать EN/RU-описания для всех {len(targets)} изображений каталога?\n\n"
+                "Существующие английские описания и переводы будут заменены. "
+                "Будут обработаны выбранные, отклонённые и ожидающие изображения.\n"
+                "Статусы и результаты фильтрации останутся без изменений."
+            )
+        else:
+            confirmation = (
+                f"Создать описания для {len(targets)} выбранных изображений без английского описания?\n"
+                "Результаты будут сохранены в SQLite; существующие описания не изменятся."
+            )
+        if not messagebox.askyesno(APP_TITLE, confirmation, icon="warning" if recreate_all else "question"):
             return
 
         settings.generate_captions = True
         settings.caption_only = False
         key = ("selected", "__bulk_caption_generation__")
-        self.progress.configure(maximum=max(len(missing), 1), value=0)
-        self.v_progress.set(f"Подписей обработано: 0 / {len(missing)}")
+        total = len(targets)
+        self.progress.configure(maximum=max(total, 1), value=0)
+        self.v_progress.set(f"Подписей обработано: 0 / {total}")
         self.v_summary.set("Создано подписей: 0 · ошибок: 0")
-        self.v_status.set(f"Подготовка описаний: 0 / {len(missing)}")
-        self._log(f"Пакетная генерация описаний для выбранных без описания: {len(missing)} файлов")
+        self.v_status.set(f"Подготовка описаний: 0 / {total}")
+        mode_text = "всего каталога" if recreate_all else "выбранных без описания"
+        self._log(f"Пакетная генерация описаний для {mode_text}: {total} файлов")
 
         def work():
             from PIL import Image, ImageOps
-            services = ModelServices(settings, lambda line: self.event_queue.put(("log", f"[AI] {line}")))
+
+            services = ModelServices(
+                settings,
+                lambda line: self.event_queue.put(("log", f"[AI] {line}")),
+            )
             generated = 0
             errors = 0
             attempted = 0
             try:
+                # CLIP is mandatory for this operation when enabled. Do not silently
+                # generate a BLIP-only caption if the classifier cannot be initialized.
+                if settings.classify_clip:
+                    services.load_clip_model()
                 services.load_caption_model()
-                for index, row in enumerate(missing, 1):
+
+                for index, row in enumerate(targets, 1):
                     source = Path(row["path"])
                     try:
                         if not source.is_file():
                             raise FileNotFoundError("Файл больше не существует")
                         with Image.open(source) as raw:
                             image = ImageOps.exif_transpose(raw).convert("RGB")
+
+                        clip_category = None
+                        clip_score = None
+                        if settings.classify_clip:
+                            # A failed classification is treated as a per-file error;
+                            # the description is not saved without the requested category.
+                            clip_category, clip_score = services.classify(image)
+                            self.event_queue.put((
+                                "log",
+                                f"[{index}/{total}] CLIP: {clip_category} ({clip_score * 100:.1f}% среди категорий)",
+                            ))
+
                         caption = services.caption(image).strip()
                         prefix = settings.caption_prefix.strip().strip(",;")
                         if prefix and not caption.casefold().startswith(prefix.casefold()):
                             caption = f"{prefix}, {caption}".strip().strip(",")
+
+                        if (
+                            settings.append_clip_label_to_caption
+                            and clip_category
+                            and clip_category.casefold() not in caption.casefold()
+                        ):
+                            caption = f"{caption.rstrip(' .,;')} , {clip_category}".replace(" ,", ",")
+
                         caption_ru = ""
                         if settings.translate_captions:
                             try:
-                                caption_ru = catalog.translate_en_ru(caption, settings.translation_provider, settings.translation_config)
+                                caption_ru = catalog.translate_en_ru(
+                                    caption,
+                                    settings.translation_provider,
+                                    settings.translation_config,
+                                )
                             except Exception as exc:
-                                self.event_queue.put(("log", f"Перевод не выполнен для {source.name}: {type(exc).__name__}: {exc}"))
-                        catalog.set_descriptions(source, caption, caption_ru)
+                                self.event_queue.put((
+                                    "log",
+                                    f"Перевод не выполнен для {source.name}: {type(exc).__name__}: {exc}",
+                                ))
+
+                        catalog.set_descriptions(
+                            source,
+                            caption,
+                            caption_ru,
+                            clip_category=clip_category,
+                            clip_relative_score=clip_score,
+                        )
                         generated += 1
-                        self.event_queue.put(("log", f"[{index}/{len(missing)}] Описание сохранено: {source.name}"))
+                        self.event_queue.put((
+                            "log",
+                            f"[{index}/{total}] Описание сохранено: {source.name}"
+                            + (f" · CLIP: {clip_category}" if clip_category else ""),
+                        ))
                     except Exception as exc:
                         errors += 1
-                        self.event_queue.put(("log", f"[{index}/{len(missing)}] Ошибка {source.name}: {type(exc).__name__}: {exc}"))
+                        self.event_queue.put((
+                            "log",
+                            f"[{index}/{total}] Ошибка {source.name}: {type(exc).__name__}: {exc}",
+                        ))
                     attempted = index
-                    self.event_queue.put(("review_bulk_caption_progress", index, len(missing), generated, errors))
+                    self.event_queue.put((
+                        "review_bulk_caption_progress",
+                        index,
+                        total,
+                        generated,
+                        errors,
+                    ))
             except Exception as exc:
                 errors += 1
-                self.event_queue.put(("log", f"Пакетная генерация остановлена: {type(exc).__name__}: {exc}"))
+                self.event_queue.put((
+                    "log",
+                    f"Пакетная генерация остановлена: {type(exc).__name__}: {exc}",
+                ))
             finally:
                 services.close()
-                self.event_queue.put(("review_bulk_caption_result", generated, errors, attempted, len(missing)))
+                self.event_queue.put((
+                    "review_bulk_caption_result",
+                    generated,
+                    errors,
+                    attempted,
+                    total,
+                ))
 
-        worker = threading.Thread(target=work, daemon=True, name="DatasetCuratorBulkCaptions")
+        worker = threading.Thread(
+            target=work,
+            daemon=True,
+            name="DatasetCuratorBulkCaptions",
+        )
         self.review_workers[key] = worker
         worker.start()
 
@@ -3369,8 +3472,7 @@ class DatasetCuratorApp(tk.Tk):
                     APP_TITLE,
                     f"Создано описаний: {generated}\nОшибок: {errors}\n\nРезультаты сохранены в SQLite.",
                 )
-                self.review_dirty["selected"] = True
-                self._refresh_review_tab("selected", reset=True, sync_existing=False)
+                self._mark_review_tabs_dirty_and_refresh_active()
             elif kind == "review_translation_result":
                 _, group, path_text, translated, error = event
                 key = (group, path_text)
