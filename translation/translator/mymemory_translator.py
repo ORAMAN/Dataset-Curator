@@ -7,8 +7,8 @@ import requests
 from translation.get_lang import get_lang
 
 class MyMemoryTranslator(BaseTranslator):
-    def __init__(self):
-        super().__init__("myMemory_free")
+    def __init__(self, provider_key="myMemory_free"):
+        super().__init__(provider_key)
 
     def translate(self, text):
         if not text:
@@ -21,6 +21,8 @@ class MyMemoryTranslator(BaseTranslator):
         api_key = str(self.api_config.get("api_key", "") or "").strip()
         if email:
             params["de"] = email
+        if self.api == "myMemory" and not api_key:
+            raise ValueError(get_lang("is_required", {"0": "API Key"}))
         if api_key:
             params["key"] = api_key
         response = requests.get(
