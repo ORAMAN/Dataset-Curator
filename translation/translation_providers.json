@@ -789,6 +789,34 @@
               "url": "https://aiodoc.physton.com/TranslationApiConfiguration.html#translation-api-description"
             }
           ]
+        },
+        {
+          "key": "myMemory",
+          "name": "MyMemory API — ключ для увеличенной квоты",
+          "type": "need_api_key",
+          "support": {
+            "en_US": "en",
+            "ru_RU": "ru"
+          },
+          "concurrent": 10,
+          "config": [
+            {
+              "key": "api_key",
+              "title": "API Key",
+              "type": "input",
+              "privacy": true
+            }
+          ],
+          "help": [
+            {
+              "title": "MyMemory: API key generator",
+              "url": "https://mymemory.translated.net/doc/keygen.php"
+            },
+            {
+              "title": "[prompt-all-in-one Wiki] Translation API Description / 翻译接口说明",
+              "url": "https://aiodoc.physton.com/TranslationApiConfiguration.html#translation-api-description"
+            }
+          ]
         }
       ]
     },
