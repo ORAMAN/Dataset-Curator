@@ -19,6 +19,7 @@ import shutil
 import threading
 import time
 import traceback
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dataset_catalog import CatalogStore
+from translation.translation_service import get_translation_providers
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -126,7 +128,8 @@ class Settings:
     caption_only: bool = False
     skip_existing_captions: bool = True
     translate_captions: bool = True
-    translation_email: str = ""
+    translation_provider: str = "google_free"
+    translation_config: dict[str, str] | None = None
     caption_model: str = "Salesforce/blip-image-captioning-base"
     caption_prefix: str = ""
     classify_clip: bool = False
@@ -606,7 +609,7 @@ class DatasetProcessor:
                         record["description_ru"] = ""
                         if self.settings.translate_captions:
                             try:
-                                russian = self.catalog.translate_en_ru(caption, self.settings.translation_email)
+                                russian = self.catalog.translate_en_ru(caption, self.settings.translation_provider, self.settings.translation_config)
                                 record["description_ru"] = russian
                                 self.log(f"  → перевод RU: {russian}")
                             except Exception as translate_exc:
@@ -681,7 +684,7 @@ class DatasetProcessor:
             record.update(reason="", caption=caption, description_ru="")
             if self.settings.translate_captions:
                 try:
-                    record["description_ru"] = self.catalog.translate_en_ru(caption, self.settings.translation_email)
+                    record["description_ru"] = self.catalog.translate_en_ru(caption, self.settings.translation_provider, self.settings.translation_config)
                     self.log(f"  → перевод RU: {record['description_ru']}")
                 except Exception as translate_exc:
                     self.log(f"  ! перевод MyMemory не выполнен: {type(translate_exc).__name__}: {translate_exc}")
@@ -927,6 +930,17 @@ class DatasetCuratorApp(tk.Tk):
         c = self.config_data
         defaults = asdict(Settings(input_dir=""))
         merged = {**defaults, **c}
+        saved_translation_config = merged.get("translation_config", {})
+        self.translation_config_data = saved_translation_config if isinstance(saved_translation_config, dict) else {}
+        legacy_email = str(merged.get("translation_email", "") or "").strip()
+        if legacy_email and not self.translation_config_data.get("myMemory_free"):
+            self.translation_config_data.setdefault("myMemory_free", {})["email"] = legacy_email
+        provider_default = merged.get("translation_provider") or ("myMemory_free" if legacy_email else "google_free")
+        self.translation_config_vars: dict[str, tk.StringVar] = {}
+        self.translation_provider_display: tk.StringVar | None = None
+        self.translation_provider_combo: ttk.Combobox | None = None
+        self.translation_config_frame: ttk.Frame | None = None
+        self.translation_provider_help: tk.Label | None = None
         self.v = {
             "input_dir": tk.StringVar(value=merged.get("input_dir", "")),
             "recursive_scan": tk.BooleanVar(value=merged.get("recursive_scan", False)),
@@ -951,7 +965,7 @@ class DatasetCuratorApp(tk.Tk):
             "caption_only": tk.BooleanVar(value=merged.get("caption_only", False)),
             "skip_existing_captions": tk.BooleanVar(value=merged.get("skip_existing_captions", True)),
             "translate_captions": tk.BooleanVar(value=merged.get("translate_captions", True)),
-            "translation_email": tk.StringVar(value=merged.get("translation_email", "")),
+            "translation_provider": tk.StringVar(value=provider_default),
             "caption_model": tk.StringVar(value=merged.get("caption_model", "Salesforce/blip-image-captioning-base")),
             "caption_prefix": tk.StringVar(value=merged.get("caption_prefix", "")),
             "classify_clip": tk.BooleanVar(value=merged.get("classify_clip", False)),
@@ -1225,6 +1239,91 @@ class DatasetCuratorApp(tk.Tk):
         warning.pack(fill="x")
         ttk.Label(warning, text="Фото не перемещаются и не переименовываются. Статусы и оба описания хранятся в dataset_curator.sqlite3. Экспорт в отдельную папку выполняется только по кнопке «Экспортировать набор».", wraplength=410).pack(anchor="w")
 
+    def _store_translation_provider_values(self):
+        provider = self.v["translation_provider"].get().strip()
+        if not provider:
+            return
+        self.translation_config_data.setdefault(provider, {})
+        self.translation_config_data[provider] = {
+            key: variable.get() for key, variable in self.translation_config_vars.items()
+        }
+
+    def _translation_config_for_current(self) -> dict[str, str]:
+        self._store_translation_provider_values()
+        provider = self.v["translation_provider"].get().strip()
+        values = self.translation_config_data.get(provider, {})
+        return dict(values) if isinstance(values, dict) else {}
+
+    def _collect_translation_config_data(self) -> dict[str, dict[str, str]]:
+        self._store_translation_provider_values()
+        return {
+            str(provider): dict(values)
+            for provider, values in self.translation_config_data.items()
+            if isinstance(values, dict)
+        }
+
+    def _on_translation_provider_selected(self, _event=None):
+        if self.translation_provider_display is None:
+            return
+        # Save values for the previous provider before changing the selection.
+        self._store_translation_provider_values()
+        selected = self.translation_provider_display.get()
+        provider = selected.split(" — ", 1)[0].strip()
+        if provider:
+            self.v["translation_provider"].set(provider)
+            self._refresh_translation_provider_controls()
+            self._schedule_save_config()
+
+    def _refresh_translation_provider_controls(self):
+        if self.translation_config_frame is None:
+            return
+        provider_key = self.v["translation_provider"].get().strip() or "google_free"
+        provider = next((item for item in get_translation_providers() if item.get("key") == provider_key), None)
+        if provider is None:
+            provider_key = "google_free"
+            provider = next((item for item in get_translation_providers() if item.get("key") == provider_key), None)
+            self.v["translation_provider"].set(provider_key)
+        self.translation_config_vars = {}
+        for child in self.translation_config_frame.winfo_children():
+            child.destroy()
+        if self.translation_provider_combo is not None:
+            label = f'{provider_key} — {provider.get("name", provider_key)}'
+            self.translation_provider_display.set(label)
+        for index, field in enumerate(provider.get("config", []) if provider else []):
+            field_key = str(field.get("key", ""))
+            field_type = field.get("type", "input")
+            saved = self.translation_config_data.get(provider_key, {})
+            default = saved.get(field_key, field.get("default", "")) if isinstance(saved, dict) else field.get("default", "")
+            variable = tk.StringVar(value=str(default or ""))
+            self.translation_config_vars[field_key] = variable
+            ttk.Label(self.translation_config_frame, text=field.get("title", field_key) + ":").grid(
+                row=index, column=0, sticky="w", pady=(3, 2), padx=(0, 8)
+            )
+            if field_type == "select":
+                control = ttk.Combobox(
+                    self.translation_config_frame, textvariable=variable,
+                    values=field.get("options", []), state="readonly",
+                )
+            else:
+                control = ttk.Entry(
+                    self.translation_config_frame, textvariable=variable,
+                    show="*" if field.get("privacy") else "",
+                )
+            control.grid(row=index, column=1, sticky="ew", pady=(3, 2))
+            variable.trace_add("write", self._schedule_save_config)
+        self.translation_config_frame.columnconfigure(1, weight=1)
+        help_items = provider.get("help", []) if provider else []
+        if self.translation_provider_help is not None:
+            if help_items:
+                help_item = help_items[0]
+                self.translation_provider_help.configure(text="Документация: " + str(help_item.get("title", provider_key)))
+                self.translation_provider_help.bind(
+                    "<Button-1>", lambda _event, url=help_item.get("url", ""): webbrowser.open(url) if url else None
+                )
+            else:
+                self.translation_provider_help.configure(text="")
+                self.translation_provider_help.unbind("<Button-1>")
+
     def _on_caption_only_toggle(self):
         # Отдельный режим сам включает генерацию подписей при построении Settings,
         # не меняя настройку создания подписей в обычном режиме фильтрации.
@@ -1257,16 +1356,31 @@ class DatasetCuratorApp(tk.Tk):
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
             captions,
-            text="Автоматически переводить английское описание на русский (MyMemory)",
+            text="Автоматически переводить английские описания на русский",
             variable=self.v["translate_captions"],
         ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(7, 0))
-        ttk.Label(captions, text="Email для бесплатного лимита MyMemory (необязательно):").grid(row=7, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(captions, textvariable=self.v["translation_email"]).grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=(5, 0))
+        ttk.Label(captions, text="Провайдер перевода EN → RU:").grid(row=7, column=0, sticky="w", pady=(7, 0))
+        self.translation_provider_display = tk.StringVar()
+        provider_items = get_translation_providers()
+        provider_labels = [f'{item["key"]} — {item.get("name", item["key"])}' for item in provider_items]
+        self.translation_provider_combo = ttk.Combobox(
+            captions, textvariable=self.translation_provider_display,
+            values=provider_labels, state="readonly",
+        )
+        self.translation_provider_combo.grid(row=7, column=1, sticky="ew", padx=(8, 0), pady=(5, 0))
+        self.translation_provider_combo.bind("<<ComboboxSelected>>", self._on_translation_provider_selected)
+        self.translation_config_frame = ttk.Frame(captions)
+        self.translation_config_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        self.translation_provider_help = tk.Label(
+            captions, text="", cursor="hand2", anchor="w", fg="#4b86c6",
+        )
+        self.translation_provider_help.grid(row=9, column=0, columnspan=2, sticky="w", pady=(3, 0))
         ttk.Label(
             captions,
-            text="MyMemory: бесплатный лимит около 5 000 символов/день без email или 50 000 с действительным email. Текст отправляется внешнему сервису для перевода.",
+            text="Ключи API сохраняются локально в dataset_curator_settings.json. Не публикуйте и не отправляйте этот файл. Провайдеры требуют интернет-доступа; OpenAI-совместимый API также позволяет подключить локальный Ollama.",
             style="Muted.TLabel", wraplength=850,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self._refresh_translation_provider_controls()
         captions.columnconfigure(1, weight=1)
 
         clip = ttk.LabelFrame(tab, text="CLIP: классификация по заданным текстовым категориям", padding=10)
@@ -2314,7 +2428,7 @@ class DatasetCuratorApp(tk.Tk):
                         caption_ru = ""
                         if settings.translate_captions:
                             try:
-                                caption_ru = catalog.translate_en_ru(caption, settings.translation_email)
+                                caption_ru = catalog.translate_en_ru(caption, settings.translation_provider, settings.translation_config)
                             except Exception as exc:
                                 self.event_queue.put(("log", f"Перевод не выполнен для {source.name}: {type(exc).__name__}: {exc}"))
                         catalog.set_descriptions(source, caption, caption_ru)
@@ -2482,7 +2596,8 @@ class DatasetCuratorApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "Изображение относится к другому каталогу. Обновите список.")
             return
 
-        email = self.v["translation_email"].get().strip()
+        translation_provider = self.v["translation_provider"].get().strip()
+        translation_config = self._translation_config_for_current()
         key = (group, str(source))
         card = self.review_card_widgets.get(key)
         if card:
@@ -2495,7 +2610,7 @@ class DatasetCuratorApp(tk.Tk):
             translated = ""
             error = ""
             try:
-                translated = CatalogStore(base).translate_en_ru(english_text, email)
+                translated = CatalogStore(base).translate_en_ru(english_text, translation_provider, translation_config)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
             self.event_queue.put(("review_translation_result", group, str(source), translated, error))
@@ -2597,7 +2712,7 @@ class DatasetCuratorApp(tk.Tk):
                         self.event_queue.put(("log", f"CLIP недоступен, оставлена подпись BLIP: {exc}"))
                 if settings.translate_captions:
                     try:
-                        caption_ru = catalog.translate_en_ru(caption, settings.translation_email)
+                        caption_ru = catalog.translate_en_ru(caption, settings.translation_provider, settings.translation_config)
                     except Exception as exc:
                         self.event_queue.put(("log", f"Перевод MyMemory не выполнен: {type(exc).__name__}: {exc}"))
             except Exception as exc:
@@ -2812,7 +2927,8 @@ class DatasetCuratorApp(tk.Tk):
             caption_only=caption_only,
             skip_existing_captions=self.v["skip_existing_captions"].get(),
             translate_captions=self.v["translate_captions"].get(),
-            translation_email=self.v["translation_email"].get().strip(),
+            translation_provider=self.v["translation_provider"].get().strip() or "google_free",
+            translation_config=self._translation_config_for_current(),
             caption_model=self.v["caption_model"].get().strip() or "Salesforce/blip-image-captioning-base",
             caption_prefix=self.v["caption_prefix"].get().strip(),
             classify_clip=self.v["classify_clip"].get(), clip_model=self.v["clip_model"].get().strip() or "openai/clip-vit-base-patch32",
@@ -2826,6 +2942,7 @@ class DatasetCuratorApp(tk.Tk):
         """Снимает значения всех контролов даже тогда, когда форма заполнена не полностью."""
         data = {key: var.get() for key, var in self.v.items()}
         data["clip_labels"] = self.clip_labels_text.get("1.0", "end-1c") if self.clip_labels_text else DEFAULT_CLIP_LABELS
+        data["translation_config"] = self._collect_translation_config_data()
         for group, variable in self.review_sort_vars.items():
             data[f"review_sort_{group}"] = variable.get()
         data["theme"] = self.theme_name
