@@ -2105,6 +2105,7 @@ class DatasetCuratorApp(tk.Tk):
         if canvas is not None:
             canvas.configure(scrollregion=canvas.bbox("all"))
         self._update_review_controls(group)
+        self._update_review_bulk_controls(group)
 
     def _build_review_card(self, list_frame: ttk.Frame, group: str, source: Path):
         card = ttk.LabelFrame(list_frame, text=f"{source.name}  ·  {source.parent.name}", padding=8)
