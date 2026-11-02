@@ -2233,6 +2233,16 @@ class DatasetCuratorApp(tk.Tk):
         if caption_ru_value:
             caption_ru_text.insert("1.0", caption_ru_value.rstrip("\r\n"))
 
+        # PageUp/PageDown в трёхстрочных редакторах карточек прокручивают
+        # общий список изображений, а не перемещают курсор внутри Text.
+        for text_widget in (caption_text, caption_ru_text):
+            text_widget.bind(
+                "<Prior>", lambda event: self._scroll_review_by_page(event, -1), add="+"
+            )
+            text_widget.bind(
+                "<Next>", lambda event: self._scroll_review_by_page(event, 1), add="+"
+            )
+
         def remember_draft(_event=None, p=path_key, widget=caption_text, ru=False):
             try:
                 target = self.review_caption_ru_drafts if ru else self.review_caption_drafts
